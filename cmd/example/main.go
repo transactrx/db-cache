@@ -21,7 +21,7 @@ func main() {
 	}
 
 	result, err := keyCache.Get("someid")
-		
+
 	if err != nil {
 		panic(err)
 	}
