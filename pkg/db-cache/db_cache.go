@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/georgysavva/scany/v2/pgxscan"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"reflect"
@@ -23,7 +22,7 @@ type DbCache[T any] struct {
 	staleCheckVal   *string
 }
 
-func (c *DbCache[T]) Get(index string) (interface{}, error) {
+func (c *DbCache[T]) Get(index string) ([]T, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	if val, ok := c.keyCache[index]; ok {
