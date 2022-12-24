@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	dbcache "gihub.com/transactrx/db-cache/pkg/db-cache"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
@@ -20,12 +19,13 @@ func main() {
 		panic(err)
 	}
 
-	result, err := keyCache.Get("someid")
+	result := keyCache.Get("someid")
 
-	if err != nil {
-		panic(err)
+	if result != nil {
+		log.Printf("%v", result)
+	} else {
+		log.Printf("Value not found in cache!")
 	}
-	fmt.Printf("%v", result)
 
 	time.Sleep(time.Minute * 20)
 
