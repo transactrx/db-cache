@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	dbcache "gihub.com/transactrx/db-cache/pkg/db-cache"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
@@ -15,17 +14,18 @@ var keyCache dbcache.DbCache[ApiKey2]
 func main() {
 	initializeDBPoolOrPanic("postgres://user:password@host:5432/db")
 
-	keyCache, err := dbcache.CreateCache[ApiKey2]("select key, description, configuration, name, max_daily_rate, volumes,client_id as clientid from api_keys", []string{"api_keys"}, "Key", time.Second*43, pool)
+	keyCache, err := dbcache.CreateCache[ApiKey2](nil, "select key, description, configuration, name, max_daily_rate, volumes,client_id as clientid from api_keys", []string{"api_keys"}, "Key", time.Second*43, pool)
 	if err != nil {
 		panic(err)
 	}
 
-	result, err := keyCache.Get("someid")
+	result := keyCache.Get("someid")
 
-	if err != nil {
-		panic(err)
+	if result != nil {
+		log.Printf("%v", result)
+	} else {
+		log.Printf("Value not found in cache!")
 	}
-	fmt.Printf("%v", result)
 
 	time.Sleep(time.Minute * 20)
 

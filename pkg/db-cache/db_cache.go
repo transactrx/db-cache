@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"log"
 
 	"reflect"
 	"sync"
@@ -20,15 +21,16 @@ type DbCache[T any] struct {
 	sqlParameters   []interface{}
 	keyField        string
 	staleCheckVal   *string
+	logger          *log.Logger
 }
 
-func (c *DbCache[T]) Get(index string) ([]T, error) {
+func (c *DbCache[T]) Get(index string) []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	if val, ok := c.keyCache[index]; ok {
-		return val, nil
+		return val
 	}
-	return nil, fmt.Errorf("sd")
+	return nil
 }
 
 func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
@@ -111,14 +113,21 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
-func CreateCache[T any](SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
+func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
 
+	if logger == nil {
+		l := log.Logger{}
+		l.SetPrefix("db_cache")
+		logger.SetFlags(log.Lshortfile | log.Ltime)
+		logger = &l
+	}
 	cache := &DbCache[T]{
 		databasePool:    DB,
 		monitoredTables: monitoredTables,
 		loadSQL:         SQL,
 		keyField:        keyField,
 		sqlParameters:   SQLParams,
+		logger:          logger,
 	}
 
 	staleCheckVal, err := cache.getDbStaleCheckValue()
@@ -134,9 +143,13 @@ func CreateCache[T any](SQL string, monitoredTables []string, keyField string, c
 		for now := range time.Tick(cacheCheckInterval) {
 			staleCheckVal, err := cache.getDbStaleCheckValue()
 			if err != nil {
-				fmt.Printf("Error in cache monitor: %v", err)
+				cache.logger.Printf("Error in cache monitor: %v", err)
 			} else {
-				fmt.Println(now, cache.loadCache(staleCheckVal))
+				cache.logger.Printf("time to reload cache: %s", now.String())
+				err := cache.loadCache(staleCheckVal)
+				if err != nil {
+					cache.logger.Printf("error while reloading cache: %v", err)
+				}
 			}
 
 		}
