@@ -1,4 +1,4 @@
-module gihub.com/transactrx/db-cache
+module github.com/transactrx/db-cache
 
 go 1.19
 
