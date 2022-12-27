@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	dbcache "gihub.com/transactrx/db-cache/pkg/db-cache"
 	"github.com/jackc/pgx/v5/pgxpool"
+	dbcache "github.com/transactrx/db-cache/pkg/db-cache"
 	"log"
 	"time"
 )
