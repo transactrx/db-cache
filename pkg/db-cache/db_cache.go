@@ -6,6 +6,7 @@ import (
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
+	"os"
 	"reflect"
 	"sync"
 	"time"
@@ -72,10 +73,10 @@ func generateStaleCheckSQL(monitoredTables []string) string {
 func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 
 	if c.staleCheckVal != nil && *c.staleCheckVal == *staleCheckVal {
-		fmt.Printf("Cache is already up to date..")
+		c.logger.Printf("Cache is already up to date..")
 		return nil
 	}
-	fmt.Printf("Loading cache %s by %s\n", c.monitoredTables, c.keyField)
+	c.logger.Printf("Loading cache %s by %s\n", c.monitoredTables, c.keyField)
 
 	var err error
 
@@ -87,7 +88,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 
 	err = pgxscan.Select(context.Background(), c.databasePool, &result, c.loadSQL, c.sqlParameters...)
 	if err != nil {
-		fmt.Printf("Err:%v", err)
+		c.logger.Printf("Err:%v", err)
 	}
 
 	newMap := make(map[string][]T)
@@ -115,10 +116,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
 
 	if logger == nil {
-		l := log.Logger{}
-		l.SetPrefix("db_cache")
-		l.SetFlags(log.Lshortfile | log.Ltime)
-		logger = &l
+		logger = log.New(os.Stdout, "db_cache ", log.Lshortfile|log.Ltime)
 	}
 	cache := &DbCache[T]{
 		databasePool:    DB,
