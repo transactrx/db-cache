@@ -117,7 +117,7 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 	if logger == nil {
 		l := log.Logger{}
 		l.SetPrefix("db_cache")
-		logger.SetFlags(log.Lshortfile | log.Ltime)
+		l.SetFlags(log.Lshortfile | log.Ltime)
 		logger = &l
 	}
 	cache := &DbCache[T]{
