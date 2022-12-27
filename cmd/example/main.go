@@ -12,6 +12,7 @@ var pool *pgxpool.Pool
 var keyCache dbcache.DbCache[ApiKey2]
 
 func main() {
+	
 	initializeDBPoolOrPanic("postgres://user:password@host:5432/db")
 
 	keyCache, err := dbcache.CreateCache[ApiKey2](nil, "select key, description, configuration, name, max_daily_rate, volumes,client_id as clientid from api_keys", []string{"api_keys"}, "Key", time.Second*43, pool)
