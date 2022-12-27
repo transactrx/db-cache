@@ -6,7 +6,6 @@ import (
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
-
 	"reflect"
 	"sync"
 	"time"
