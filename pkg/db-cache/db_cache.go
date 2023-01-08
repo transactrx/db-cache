@@ -88,7 +88,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 
 	err = pgxscan.Select(context.Background(), c.databasePool, &result, c.loadSQL, c.sqlParameters...)
 	if err != nil {
-		c.logger.Printf("Err:%v", err)
+		return err
 	}
 
 	newMap := make(map[string][]T)
