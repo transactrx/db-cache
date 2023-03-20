@@ -1,5 +1,6 @@
 package main
 
+
 type ApiKey2 struct {
 	Key           *string
 	Name          *string
