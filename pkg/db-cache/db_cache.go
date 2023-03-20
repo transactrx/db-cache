@@ -3,13 +3,14 @@ package dbcache
 import (
 	"context"
 	"fmt"
-	"github.com/georgysavva/scany/v2/pgxscan"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"os"
 	"reflect"
 	"sync"
 	"time"
+
+	"github.com/georgysavva/scany/v2/pgxscan"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DbCache[T any] struct {
@@ -31,6 +32,16 @@ func (c *DbCache[T]) Get(index string) []T {
 		return val
 	}
 	return nil
+}
+
+func (c *DbCache[T]) GetAll() []T {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	var result []T
+	for _, val := range c.keyCache {
+		result = append(result, val...)
+	}
+	return result
 }
 
 func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
