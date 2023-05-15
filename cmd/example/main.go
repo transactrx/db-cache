@@ -9,15 +9,16 @@ import (
 )
 
 var pool *pgxpool.Pool
+var rwPool *pgxpool.Pool
 var keyCache dbcache.DbCache[ApiKey2]
 
 func main() {
 
-	initializeDBPoolOrPanic("postgres://user:pass@host:5432/db")
+	initializeDBPoolOrPanic("postgres://user:password@readOnlyHost:5432/prod", "postgres://user:password@readWriteHost:5432/prod")
 
 	// create new cache
 
-	keyCache, err := dbcache.CreateCache[ApiKey2](nil, "select key, description, configuration, name, max_daily_rate, volumes,client_id as clientid from api_keys", []string{"api_keys"}, "Key", time.Second*43, pool, pool)
+	keyCache, err := dbcache.CreateCache[ApiKey2](nil, "select key, description, configuration, name, max_daily_rate, volumes,client_id as clientid from api_keys", []string{"api_keys"}, "Key", time.Second*43, pool, rwPool)
 	if err != nil {
 		panic(err)
 	}
@@ -34,9 +35,13 @@ func main() {
 
 }
 
-func initializeDBPoolOrPanic(url string) {
+func initializeDBPoolOrPanic(url, urlRW string) {
 	var err error
 	pool, err = pgxpool.New(context.Background(), url)
+	if err != nil {
+		log.Panicf("Could not create database pool: %v", err)
+	}
+	rwPool, err = pgxpool.New(context.Background(), urlRW)
 	if err != nil {
 		log.Panicf("Could not create database pool: %v", err)
 	}
