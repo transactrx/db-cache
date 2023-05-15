@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var initialized bool = false
+
 type DbCache[T any] struct {
 	mutex           sync.RWMutex
 	databasePool    *pgxpool.Pool
@@ -66,11 +68,11 @@ func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 func generateStaleCheckSQL(monitoredTables []string) string {
 	var checkQuery string
 	if len(monitoredTables) == 1 {
-		checkQuery = fmt.Sprintf("select cast(count(*) as varchar) || cast( case when max(pg_xact_commit_timestamp(xmin)) is null then '1970-01-01 00:00:01.0000+00' else max(pg_xact_commit_timestamp(xmin)) end as varchar) as ct from %s", monitoredTables[0])
+		checkQuery = fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[0])
 	} else {
 		checkQuery = "select string_agg(ct, ', ') from ("
 		for i := 0; i < len(monitoredTables); i++ {
-			checkQuery = checkQuery + fmt.Sprintf("select cast(count(*) as varchar) || cast( case when max(pg_xact_commit_timestamp(xmin)) is null then '1970-01-01 00:00:01.0000+00' else max(pg_xact_commit_timestamp(xmin)) end as varchar) as ct from %s", monitoredTables[i])
+			checkQuery = checkQuery + fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[i])
 			if i < len(monitoredTables)-1 {
 				checkQuery = checkQuery + " union all "
 			} else {
@@ -137,7 +139,7 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 		sqlParameters:   SQLParams,
 		logger:          logger,
 	}
-
+	err := createTableMonitoringTriggers(monitoredTables, DB)
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
 		return nil, err
@@ -163,6 +165,26 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 		}
 	}()
 	return cache, nil
+
+}
+
+func createTableMonitoringTriggers(tables []string, db *pgxpool.Pool) error {
+	for _, table := range tables {
+		err := createTableMonitoringTrigger(table, db)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func createTableMonitoringTrigger(tableName string, DB *pgxpool.Pool) error {
+	sql := fmt.Sprintf(`select create_table_monitor_trigger('%s');`, tableName)
+	_, err := DB.Exec(context.Background(), sql)
+	if err != nil {
+		log.Printf("error while creating table monitoring trigger for %s: %v", tableName, err)
+	}
+	return err
 
 }
 
