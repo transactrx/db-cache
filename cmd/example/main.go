@@ -13,7 +13,7 @@ var keyCache dbcache.DbCache[ApiKey2]
 
 func main() {
 
-	initializeDBPoolOrPanic("postgres://user:password@host:5432/db")
+	initializeDBPoolOrPanic("postgres://user:pass@host:5432/db")
 
 	// create new cache
 
