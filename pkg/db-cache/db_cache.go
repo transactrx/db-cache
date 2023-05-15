@@ -126,7 +126,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
-func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
+func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, DB_RW *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
 
 	if logger == nil {
 		logger = log.New(os.Stdout, "db_cache ", log.Lshortfile|log.Ltime)
@@ -139,7 +139,7 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 		sqlParameters:   SQLParams,
 		logger:          logger,
 	}
-	err := createTableMonitoringTriggers(monitoredTables, DB)
+	err := createTableMonitoringTriggers(monitoredTables, DB_RW)
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
 		return nil, err
