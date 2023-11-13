@@ -97,7 +97,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 		return err
 	}
 
-	var result []*T
+	var result []T
 
 	err = pgxscan.Select(context.Background(), c.databasePool, &result, c.loadSQL, c.sqlParameters...)
 	if err != nil {
@@ -116,7 +116,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 		if _, ok := newMap[keyValue]; !ok {
 			newMap[keyValue] = []T{}
 		}
-		newMap[keyValue] = append(newMap[keyValue], *newData)
+		newMap[keyValue] = append(newMap[keyValue], newData)
 	}
 
 	c.staleCheckVal = staleCheckVal
