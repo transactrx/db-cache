@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,11 +190,22 @@ func createTableMonitoringTrigger(tableName string, DB *pgxpool.Pool) error {
 }
 
 func getKeyValue(obj any, keyField string) (string, error) {
-	r := reflect.ValueOf(obj)
-	fv := reflect.Indirect(r).FieldByName(keyField)
-	if !fv.IsValid() {
-		return "", fmt.Errorf("field %s is not found in the APIKey struct", keyField)
-	}
-	return fv.Elem().String(), nil
 
+	objValue := reflect.ValueOf(obj)
+	objKind := objValue.Kind()
+	objType := objValue.Type()
+	if (objKind == reflect.Map) && (objType.Key().Kind() == reflect.String) {
+		for _, mapKey := range objValue.MapKeys() {
+			if strings.EqualFold(mapKey.String(), keyField) {
+				return objValue.MapIndex(mapKey).Interface().(string), nil
+			}
+		}
+		return "", fmt.Errorf("specified key field '%s' is not part of the query results", keyField)
+	} else {
+		fv := reflect.Indirect(objValue).FieldByName(keyField)
+		if !fv.IsValid() {
+			return "", fmt.Errorf("field %s is not found in the APIKey struct", keyField)
+		}
+		return fv.Elem().String(), nil
+	}
 }
