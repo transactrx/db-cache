@@ -1,6 +1,8 @@
 The DB CACHE requires that the following SQL resources
 
 ***NOTE:*** The following SQL scripts are provided as a convenience.  They are not required to be used.  The only requirement is that the SQL resources exist in the database.
+If you would like to automate the execution of these scripts as part of your particular solution, there is a `CreateDbTriggersAndTables` function which you can invoke to do so.
+
 ```sql
 CREATE  TABLE IF NOT EXISTS table_log (
    table_name text PRIMARY KEY,
