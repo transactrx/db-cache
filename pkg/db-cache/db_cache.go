@@ -127,6 +127,17 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
+func (cache *DbCache[T]) ForceRefresh() error {
+	cache.staleCheckVal = nil
+	staleCheckVal, err := cache.getDbStaleCheckValue()
+	if err != nil {
+		return err
+	}
+	cache.loadCache(staleCheckVal)
+
+	return nil
+}
+
 func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, DB_RW *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
 
 	if logger == nil {
