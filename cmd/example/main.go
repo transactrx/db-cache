@@ -14,7 +14,7 @@ var keyCache dbcache.DbCache[ApiKey2]
 
 func main() {
 
-	initializeDBPoolOrPanic("postgres://olorda:TransactRx0!@proddb.pocnettech.com:5432/prod", "postgres://olorda:TransactRx0!@proddb.pocnettech.com:5432/prod")
+	initializeDBPoolOrPanic("postgres://user:password@readOnlyHost:5432/prod", "postgres://user:password@readWriteHost:5432/prod")
 
 	// create new cache
 
@@ -30,8 +30,6 @@ func main() {
 	} else {
 		log.Printf("Value not found in cache!")
 	}
-
-	keyCache.ForceRefresh()
 
 	time.Sleep(time.Minute * 20)
 
