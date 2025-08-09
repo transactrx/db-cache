@@ -29,11 +29,7 @@ BEGIN
             tgisinternal = 'f' AND
             tgrelid = (table_name::regclass)::oid
     ) THEN
-        EXECUTE format('
-            CREATE TRIGGER monitor_changes
-            AFTER INSERT OR UPDATE OR DELETE ON %I
-            FOR EACH ROW EXECUTE FUNCTION log_changes();
-        ', table_name);
+        EXECUTE format('CREATE TRIGGER monitor_changes AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION log_changes();', table_name);
     END IF;
 END
 $FUNC$;

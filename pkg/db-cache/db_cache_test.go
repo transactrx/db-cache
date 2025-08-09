@@ -10,6 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Constants to avoid code duplication
+const (
+	SelectActiveAPIKeysSQL  = "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = true"
+	FailedToCreateCacheMsg  = "Failed to create cache: %v"
+	ExpectedKeysForUser1Msg = "Expected 2 keys for user1, got %d"
+	ExpectedActiveKeysMsg   = "Expected 4 active keys total, got %d"
+)
+
 type ApiKey struct {
 	ID        *int       `db:"id"`
 	ApiKey    *string    `db:"api_key"`
@@ -95,23 +103,23 @@ func TestGenerateStaleCheckSQL(t *testing.T) {
 	}
 }
 
-func TestCreateCache_ApiKeys(t *testing.T) {
+func TestCreateCacheApiKeys(t *testing.T) {
 	logger := log.New(os.Stdout, "test ", log.Lshortfile|log.Ltime)
 
-	sql := "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = true"
+	sql := SelectActiveAPIKeysSQL
 	monitoredTables := []string{"api_keys"}
 	keyField := "UserID"
 	cacheCheckInterval := 1 * time.Second
 
 	cache, err := CreateCache[ApiKey](logger, sql, monitoredTables, keyField, cacheCheckInterval, testDB, testDB)
 	if err != nil {
-		t.Fatalf("Failed to create cache: %v", err)
+		t.Fatalf(FailedToCreateCacheMsg, err)
 	}
 
 	// Test Get method
 	user1Keys := cache.Get("user1")
 	if len(user1Keys) != 2 {
-		t.Errorf("Expected 2 keys for user1, got %d", len(user1Keys))
+		t.Errorf(ExpectedKeysForUser1Msg, len(user1Keys))
 	}
 
 	user2Keys := cache.Get("user2")
@@ -122,7 +130,7 @@ func TestCreateCache_ApiKeys(t *testing.T) {
 	// Test GetAll method
 	allKeys := cache.GetAll()
 	if len(allKeys) != 4 { // Only active keys
-		t.Errorf("Expected 4 active keys total, got %d", len(allKeys))
+		t.Errorf(ExpectedActiveKeysMsg, len(allKeys))
 	}
 
 	// Test non-existent user
@@ -132,7 +140,7 @@ func TestCreateCache_ApiKeys(t *testing.T) {
 	}
 }
 
-func TestCreateCache_Products(t *testing.T) {
+func TestCreateCacheProducts(t *testing.T) {
 	logger := log.New(os.Stdout, "test ", log.Lshortfile|log.Ltime)
 
 	sql := "SELECT id, name, category, price, in_stock, created_at FROM products"
@@ -142,7 +150,7 @@ func TestCreateCache_Products(t *testing.T) {
 
 	cache, err := CreateCache[Product](logger, sql, monitoredTables, keyField, cacheCheckInterval, testDB, testDB)
 	if err != nil {
-		t.Fatalf("Failed to create cache: %v", err)
+		t.Fatalf(FailedToCreateCacheMsg, err)
 	}
 
 	// Test Get method
@@ -171,14 +179,14 @@ func TestCreateCache_Products(t *testing.T) {
 func TestCacheRefresh(t *testing.T) {
 	logger := log.New(os.Stdout, "test ", log.Lshortfile|log.Ltime)
 
-	sql := "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = true"
+	sql := SelectActiveAPIKeysSQL
 	monitoredTables := []string{"api_keys"}
 	keyField := "UserID"
 	cacheCheckInterval := 1 * time.Second
 
 	cache, err := CreateCache[ApiKey](logger, sql, monitoredTables, keyField, cacheCheckInterval, testDB, testDB)
 	if err != nil {
-		t.Fatalf("Failed to create cache: %v", err)
+		t.Fatalf(FailedToCreateCacheMsg, err)
 	}
 
 	// Initial state
@@ -251,7 +259,7 @@ func TestCreateDbTriggersAndTables(t *testing.T) {
 	}
 }
 
-func TestCreateCache_WriterDbFailure(t *testing.T) {
+func TestCreateCacheWriterDbFailure(t *testing.T) {
 	logger := log.New(os.Stdout, "test_failure ", log.Lshortfile|log.Ltime)
 
 	// Create an invalid database connection for the writer (simulating failure)
@@ -259,14 +267,14 @@ func TestCreateCache_WriterDbFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create invalid config: %v", err)
 	}
-	
+
 	invalidDB, err := pgxpool.New(context.Background(), invalidConfig.ConnString())
 	if err != nil {
 		t.Fatalf("Failed to create invalid db pool: %v", err)
 	}
 	defer invalidDB.Close()
 
-	sql := "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = true"
+	sql := SelectActiveAPIKeysSQL
 	monitoredTables := []string{"api_keys"}
 	keyField := "UserID"
 	cacheCheckInterval := 1 * time.Second
@@ -280,22 +288,22 @@ func TestCreateCache_WriterDbFailure(t *testing.T) {
 	// Verify cache still works for reading data
 	user1Keys := cache.Get("user1")
 	if len(user1Keys) != 2 {
-		t.Errorf("Expected 2 keys for user1, got %d", len(user1Keys))
+		t.Errorf(ExpectedKeysForUser1Msg, len(user1Keys))
 	}
 
 	// Verify GetAll still works
 	allKeys := cache.GetAll()
 	if len(allKeys) != 4 { // Only active keys
-		t.Errorf("Expected 4 active keys total, got %d", len(allKeys))
+		t.Errorf(ExpectedActiveKeysMsg, len(allKeys))
 	}
 
 	t.Logf("Cache successfully created and functional despite writer DB failure")
 }
 
-func TestCreateCache_BothDbsAvailable(t *testing.T) {
+func TestCreateCacheBothDbsAvailable(t *testing.T) {
 	logger := log.New(os.Stdout, "test_success ", log.Lshortfile|log.Ltime)
 
-	sql := "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = true"
+	sql := SelectActiveAPIKeysSQL
 	monitoredTables := []string{"api_keys"}
 	keyField := "UserID"
 	cacheCheckInterval := 1 * time.Second
@@ -309,13 +317,13 @@ func TestCreateCache_BothDbsAvailable(t *testing.T) {
 	// Verify cache works normally
 	user1Keys := cache.Get("user1")
 	if len(user1Keys) != 2 {
-		t.Errorf("Expected 2 keys for user1, got %d", len(user1Keys))
+		t.Errorf(ExpectedKeysForUser1Msg, len(user1Keys))
 	}
 
 	// Verify GetAll works
 	allKeys := cache.GetAll()
 	if len(allKeys) != 4 { // Only active keys
-		t.Errorf("Expected 4 active keys total, got %d", len(allKeys))
+		t.Errorf(ExpectedActiveKeysMsg, len(allKeys))
 	}
 
 	t.Logf("Cache successfully created with both reader and writer DBs available")
