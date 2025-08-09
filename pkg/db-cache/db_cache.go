@@ -151,7 +151,7 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 		sqlParameters:   SQLParams,
 		logger:          logger,
 	}
-	err := createTableMonitoringTriggers(monitoredTables, DB_RW)
+	createTableMonitoringTriggers(monitoredTables, DB_RW, logger)
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
 		return nil, err
@@ -180,24 +180,20 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 
 }
 
-func createTableMonitoringTriggers(tables []string, db *pgxpool.Pool) error {
+func createTableMonitoringTriggers(tables []string, db *pgxpool.Pool, logger *log.Logger) {
 	for _, table := range tables {
-		err := createTableMonitoringTrigger(table, db)
-		if err != nil {
-			return err
-		}
+		createTableMonitoringTrigger(table, db, logger)
 	}
-	return nil
 }
 
-func createTableMonitoringTrigger(tableName string, DB *pgxpool.Pool) error {
+func createTableMonitoringTrigger(tableName string, DB *pgxpool.Pool, logger *log.Logger) {
 	sql := fmt.Sprintf(`select create_table_monitor_trigger('%s');`, tableName)
 	_, err := DB.Exec(context.Background(), sql)
 	if err != nil {
-		log.Printf("error while creating table monitoring trigger for %s: %v", tableName, err)
+		logger.Printf("warning: could not create table monitoring trigger for %s: %v (cache will still work but may not auto-refresh)", tableName, err)
+	} else {
+		logger.Printf("successfully created monitoring trigger for table: %s", tableName)
 	}
-	return err
-
 }
 
 func getKeyValue(obj any, keyField string) (string, error) {
