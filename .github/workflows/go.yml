@@ -53,10 +53,3 @@ jobs:
         cd pkg/db-cache
         go test -v -race -cover -coverprofile=coverage.out
 
-    - name: Upload coverage to Codecov
-      if: success()
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./pkg/db-cache/coverage.out
-        flags: unittests
-        fail_ci_if_error: true
