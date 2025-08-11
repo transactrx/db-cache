@@ -187,8 +187,18 @@ func createTableMonitoringTriggers(tables []string, db *pgxpool.Pool, logger *lo
 }
 
 func createTableMonitoringTrigger(tableName string, DB *pgxpool.Pool, logger *log.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Printf("warning: panic while creating table monitoring trigger for %s: %v (cache will still work but may not auto-refresh)", tableName, r)
+		}
+	}()
+
 	sql := fmt.Sprintf(`select create_table_monitor_trigger('%s');`, tableName)
-	_, err := DB.Exec(context.Background(), sql)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := DB.Exec(ctx, sql)
 	if err != nil {
 		logger.Printf("warning: could not create table monitoring trigger for %s: %v (cache will still work but may not auto-refresh)", tableName, err)
 	} else {
