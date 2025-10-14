@@ -3,6 +3,7 @@ module github.com/transactrx/db-cache
 go 1.24
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/georgysavva/scany/v2 v2.1.4
 	github.com/jackc/pgx/v5 v5.7.5
 )
