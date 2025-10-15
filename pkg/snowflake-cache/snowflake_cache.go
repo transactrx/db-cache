@@ -27,9 +27,9 @@ type SnowflakeTable struct {
 // The cache periodically polls DB_CACHE_LOG to compute a staleness fingerprint.
 // If the fingerprint differs from the last seen value, it reloads the dataset
 // using the provided SQL and rebuilds an index of key -> []T.
-type SnowflakeCache[T any] struct {
+type DbCache[T any] struct {
 	mutex           sync.RWMutex
-	db              *sql.DB
+	db              any
 	keyCache        map[string][]T
 	monitoredTables []string
 	loadSQL         string
@@ -40,7 +40,7 @@ type SnowflakeCache[T any] struct {
 }
 
 // Get returns the cached slice associated with the given key, or nil if missing.
-func (c *SnowflakeCache[T]) Get(key string) []T {
+func (c *DbCache[T]) Get(key string) []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	if val, ok := c.keyCache[key]; ok {
@@ -50,7 +50,7 @@ func (c *SnowflakeCache[T]) Get(key string) []T {
 }
 
 // GetAll flattens and returns all cached rows across all keys.
-func (c *SnowflakeCache[T]) GetAll() []T {
+func (c *DbCache[T]) GetAll() []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	var result []T
@@ -61,7 +61,7 @@ func (c *SnowflakeCache[T]) GetAll() []T {
 }
 
 // ForceRefresh clears the last fingerprint and forces a reload at once.
-func (c *SnowflakeCache[T]) ForceRefresh() error {
+func (c *DbCache[T]) ForceRefresh() error {
 	c.mutex.Lock()
 	c.staleCheckVal = nil
 	c.mutex.Unlock()
@@ -75,12 +75,12 @@ func (c *SnowflakeCache[T]) ForceRefresh() error {
 
 // getDbStaleCheckValue builds and executes the fingerprint query over DB_CACHE_LOG
 // for the configured set of monitored tables.
-func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
+func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if len(c.monitoredTables) == 1 {
 		q := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
-		row := c.db.QueryRowContext(ctx, q, c.monitoredTables[0])
+		row := c.db.(*sql.DB).QueryRowContext(ctx, q, c.monitoredTables[0])
 		var v string
 		if err := row.Scan(&v); err != nil {
 			return nil, err
@@ -103,7 +103,7 @@ func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
 	}
 
 	q := b.String()
-	row := c.db.QueryRowContext(ctx, q, args...)
+	row := c.db.(*sql.DB).QueryRowContext(ctx, q, args...)
 	var v sql.NullString
 	if err := row.Scan(&v); err != nil {
 		return nil, err
@@ -117,7 +117,7 @@ func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
 
 // loadCache executes the load SQL, rebuilds the in-memory index, and
 // stores the new fingerprint.
-func (c *SnowflakeCache[T]) loadCache(staleCheckVal *string) error {
+func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	if c.staleCheckVal != nil && *c.staleCheckVal == *staleCheckVal {
 		c.logger.Printf("Cache is already up to date..")
 		return nil
@@ -125,7 +125,7 @@ func (c *SnowflakeCache[T]) loadCache(staleCheckVal *string) error {
 	c.logger.Printf("Loading cache %s by %s\n", c.monitoredTables, c.keyField)
 
 	var result []T
-	if err := sqlscan.Select(context.Background(), c.db, &result, c.loadSQL, c.sqlParameters...); err != nil {
+	if err := sqlscan.Select(context.Background(), c.db.(*sql.DB), &result, c.loadSQL, c.sqlParameters...); err != nil {
 		return err
 	}
 
@@ -158,16 +158,16 @@ func (c *SnowflakeCache[T]) loadCache(staleCheckVal *string) error {
 //   - signalSchema: schema where DB_CACHE_LOG resides (e.g., "UTILS")
 //   - defaultSchema: schema applied to unqualified monitored table names
 //   - sqlParams: optional bind parameters for SQL
-func CreateSnowflakeCache[T any](
+func CreateCache[T any](
 	logger *log.Logger,
 	SQL string,
 	monitoredTables []string,
 	keyField string,
 	checkInterval time.Duration,
-	db *sql.DB,
+	db any,
 	defaultSchema string,
 	sqlParams ...any,
-) (*SnowflakeCache[T], error) {
+) (*DbCache[T], error) {
 	if SQL == "" {
 		return nil, fmt.Errorf("loadSQL must not be empty")
 	}
@@ -200,13 +200,13 @@ func CreateSnowflakeCache[T any](
 // migration-friendly parameter ordering.
 func CreateSnowflakeCacheQualified[T any](
 	logger *log.Logger,
-	db *sql.DB,
+	db any,
 	loadSQL string,
 	keyField string,
 	checkInterval time.Duration,
 	monitoredTables []SnowflakeTable,
 	sqlParams ...any,
-) (*SnowflakeCache[T], error) {
+) (*DbCache[T], error) {
 	if db == nil {
 		return nil, fmt.Errorf("db must not be nil")
 	}
@@ -231,7 +231,7 @@ func CreateSnowflakeCacheQualified[T any](
 		}
 	}
 
-	cache := &SnowflakeCache[T]{
+	cache := &DbCache[T]{
 		db:              db,
 		loadSQL:         loadSQL,
 		sqlParameters:   sqlParams,

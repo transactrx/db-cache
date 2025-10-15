@@ -35,8 +35,8 @@ func TestCreateSnowflakeCache_SingleTable(t *testing.T) {
 			AddRow("u1", 2).
 			AddRow("u2", 3))
 
-	// Act
-	cache, err := CreateSnowflakeCache[testItem](
+		// Act
+	cache, err := CreateCache[testItem](
 		nil,     // logger
 		loadSQL, // SQL
 		[]string{"PUBLIC.API_KEYS"},
@@ -83,7 +83,7 @@ func TestSnowflakeCache_ForceRefresh(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(loadSQL)).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "id"}).AddRow("u1", 1))
 
-	cache, err := CreateSnowflakeCache[testItem](nil, loadSQL, []string{"PUBLIC.API_KEYS"}, "UserID", time.Hour, db, "PUBLIC")
+	cache, err := CreateCache[testItem](nil, loadSQL, []string{"PUBLIC.API_KEYS"}, "UserID", time.Hour, db, "PUBLIC")
 	if err != nil {
 		t.Fatalf("CreateSnowflakeCache failed: %v", err)
 	}
