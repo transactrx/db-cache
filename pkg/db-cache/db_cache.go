@@ -47,17 +47,6 @@ func (c *DbCache[T]) GetAll() []T {
 	return result
 }
 
-func (cache *DbCache[T]) ForceRefresh() error {
-	cache.staleCheckVal = nil
-	staleCheckVal, err := cache.getDbStaleCheckValue()
-	if err != nil {
-		return err
-	}
-	cache.loadCache(staleCheckVal)
-
-	return nil
-}
-
 func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 
 	checkQuery := generateStaleCheckSQL(c.monitoredTables)
@@ -75,6 +64,24 @@ func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 		return nil, fmt.Errorf("stale check query returns no rows")
 	}
 
+}
+
+func generateStaleCheckSQL(monitoredTables []string) string {
+	var checkQuery string
+	if len(monitoredTables) == 1 {
+		checkQuery = fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[0])
+	} else {
+		checkQuery = "select string_agg(ct, ', ') from ("
+		for i := 0; i < len(monitoredTables); i++ {
+			checkQuery = checkQuery + fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[i])
+			if i < len(monitoredTables)-1 {
+				checkQuery = checkQuery + " union all "
+			} else {
+				checkQuery = checkQuery + ") as t"
+			}
+		}
+	}
+	return checkQuery
 }
 
 func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
@@ -120,9 +127,18 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
-func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string,
-	keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool,
-	DB_RW *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
+func (cache *DbCache[T]) ForceRefresh() error {
+	cache.staleCheckVal = nil
+	staleCheckVal, err := cache.getDbStaleCheckValue()
+	if err != nil {
+		return err
+	}
+	cache.loadCache(staleCheckVal)
+
+	return nil
+}
+
+func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, DB_RW *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
 
 	if logger == nil {
 		logger = log.New(os.Stdout, "db_cache ", log.Lshortfile|log.Ltime)
@@ -209,22 +225,4 @@ func getKeyValue(obj any, keyField string) (string, error) {
 		}
 		return fv.Elem().String(), nil
 	}
-}
-
-func generateStaleCheckSQL(monitoredTables []string) string {
-	var checkQuery string
-	if len(monitoredTables) == 1 {
-		checkQuery = fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[0])
-	} else {
-		checkQuery = "select string_agg(ct, ', ') from ("
-		for i := 0; i < len(monitoredTables); i++ {
-			checkQuery = checkQuery + fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[i])
-			if i < len(monitoredTables)-1 {
-				checkQuery = checkQuery + " union all "
-			} else {
-				checkQuery = checkQuery + ") as t"
-			}
-		}
-	}
-	return checkQuery
 }

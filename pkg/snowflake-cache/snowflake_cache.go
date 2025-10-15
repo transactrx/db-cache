@@ -31,7 +31,7 @@ type SnowflakeCache[T any] struct {
 	mutex           sync.RWMutex
 	db              *sql.DB
 	keyCache        map[string][]T
-	monitoredTables []SnowflakeTable
+	monitoredTables []string
 	loadSQL         string
 	sqlParameters   []any
 	keyField        string
@@ -80,7 +80,7 @@ func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
 	defer cancel()
 	if len(c.monitoredTables) == 1 {
 		q := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
-		row := c.db.QueryRowContext(ctx, q, c.monitoredTables[0].Table)
+		row := c.db.QueryRowContext(ctx, q, c.monitoredTables[0])
 		var v string
 		if err := row.Scan(&v); err != nil {
 			return nil, err
@@ -94,7 +94,7 @@ func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
 	args := make([]any, 0, len(c.monitoredTables))
 	for i, t := range c.monitoredTables {
 		b.WriteString("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ? ")
-		args = append(args, t.Table)
+		args = append(args, t)
 		if i < len(c.monitoredTables)-1 {
 			b.WriteString(" UNION ALL ")
 		} else {
@@ -223,12 +223,20 @@ func CreateSnowflakeCacheQualified[T any](
 		logger = log.New(os.Stdout, "sf_cache ", log.Lshortfile|log.Ltime)
 	}
 
+	// Convert to []string for internal storage
+	tbls := make([]string, 0, len(monitoredTables))
+	for _, t := range monitoredTables {
+		if t.Table != "" {
+			tbls = append(tbls, strings.ToUpper(t.Table))
+		}
+	}
+
 	cache := &SnowflakeCache[T]{
 		db:              db,
 		loadSQL:         loadSQL,
 		sqlParameters:   sqlParams,
 		keyField:        keyField,
-		monitoredTables: monitoredTables,
+		monitoredTables: tbls,
 		logger:          logger,
 		keyCache:        make(map[string][]T),
 	}
