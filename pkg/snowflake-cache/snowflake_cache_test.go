@@ -22,9 +22,9 @@ func TestCreateSnowflakeCache_SingleTable(t *testing.T) {
 	defer db.Close()
 
 	// Fingerprint query expectation
-	fpQuery := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM UTILS.DB_CACHE_LOG WHERE schema_name = ? AND table_name = ?"
+	fpQuery := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
 	mock.ExpectQuery(regexp.QuoteMeta(fpQuery)).
-		WithArgs("PUBLIC", "API_KEYS").
+		WithArgs("API_KEYS").
 		WillReturnRows(sqlmock.NewRows([]string{"ct"}).AddRow("fp1"))
 
 	// Load SQL expectation
@@ -35,7 +35,7 @@ func TestCreateSnowflakeCache_SingleTable(t *testing.T) {
 			AddRow("u1", 2).
 			AddRow("u2", 3))
 
-		// Act
+	// Act
 	cache, err := CreateSnowflakeCache[testItem](
 		nil,     // logger
 		loadSQL, // SQL
@@ -43,13 +43,12 @@ func TestCreateSnowflakeCache_SingleTable(t *testing.T) {
 		"UserID",
 		time.Hour,
 		db,
-		"UTILS",
 		"PUBLIC",
 	)
 	if err != nil {
 		t.Fatalf("CreateSnowflakeCache failed: %v", err)
 	}
-	defer cache.Close()
+	// no Close() in Snowflake cache (parity with Postgres)
 
 	// Assert cache contents
 	u1 := cache.Get("u1")
@@ -74,9 +73,9 @@ func TestSnowflakeCache_ForceRefresh(t *testing.T) {
 	defer db.Close()
 
 	// Initial fingerprint
-	fpQuery := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM UTILS.DB_CACHE_LOG WHERE schema_name = ? AND table_name = ?"
+	fpQuery := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
 	mock.ExpectQuery(regexp.QuoteMeta(fpQuery)).
-		WithArgs("PUBLIC", "API_KEYS").
+		WithArgs("API_KEYS").
 		WillReturnRows(sqlmock.NewRows([]string{"ct"}).AddRow("fp1"))
 
 	// Initial load
@@ -84,15 +83,15 @@ func TestSnowflakeCache_ForceRefresh(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(loadSQL)).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "id"}).AddRow("u1", 1))
 
-	cache, err := CreateSnowflakeCache[testItem](nil, loadSQL, []string{"PUBLIC.API_KEYS"}, "UserID", time.Hour, db, "UTILS", "PUBLIC")
+	cache, err := CreateSnowflakeCache[testItem](nil, loadSQL, []string{"PUBLIC.API_KEYS"}, "UserID", time.Hour, db, "PUBLIC")
 	if err != nil {
 		t.Fatalf("CreateSnowflakeCache failed: %v", err)
 	}
-	defer cache.Close()
+	// no Close() in Snowflake cache (parity with Postgres)
 
 	// ForceRefresh should re-read fingerprint and reload
 	mock.ExpectQuery(regexp.QuoteMeta(fpQuery)).
-		WithArgs("PUBLIC", "API_KEYS").
+		WithArgs("API_KEYS").
 		WillReturnRows(sqlmock.NewRows([]string{"ct"}).AddRow("fp2"))
 
 	// Reload expectation

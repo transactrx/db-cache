@@ -35,12 +35,8 @@ type SnowflakeCache[T any] struct {
 	loadSQL         string
 	sqlParameters   []any
 	keyField        string
-	signalSchema    string
 	staleCheckVal   *string
 	logger          *log.Logger
-	checkInterval   time.Duration
-	ticker          *time.Ticker
-	stopCh          chan struct{}
 }
 
 // Get returns the cached slice associated with the given key, or nil if missing.
@@ -70,112 +66,66 @@ func (c *SnowflakeCache[T]) ForceRefresh() error {
 	c.staleCheckVal = nil
 	c.mutex.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	fp, err := c.getDbStaleCheckValue(ctx)
+	fp, err := c.getDbStaleCheckValue()
 	if err != nil {
 		return err
 	}
-	return c.loadCache(ctx, fp)
+	return c.loadCache(fp)
 }
 
-// getStaleFingerprint builds and executes the fingerprint query over DB_CACHE_LOG
+// getDbStaleCheckValue builds and executes the fingerprint query over DB_CACHE_LOG
 // for the configured set of monitored tables.
-func (c *SnowflakeCache[T]) getDbStaleCheckValue(ctx context.Context) (string, error) {
+func (c *SnowflakeCache[T]) getDbStaleCheckValue() (*string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if len(c.monitoredTables) == 1 {
-		q := fmt.Sprintf(
-			"SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM %s.DB_CACHE_LOG WHERE schema_name = ? AND table_name = ?",
-			c.signalSchema,
-		)
-		row := c.db.QueryRowContext(ctx, q, c.monitoredTables[0].Schema, c.monitoredTables[0].Table)
+		q := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
+		row := c.db.QueryRowContext(ctx, q, c.monitoredTables[0].Table)
 		var v string
 		if err := row.Scan(&v); err != nil {
-			return "", err
+			return nil, err
 		}
-		return v, nil
+		return &v, nil
 	}
 
-	// Multiple tables: aggregate per (schema_name, table_name) and listagg the tokens
+	// Multiple tables: aggregate per table using union-all and listagg tokens
 	var b strings.Builder
-	b.WriteString("SELECT LISTAGG(ct, ', ') FROM ( ")
-	b.WriteString("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct ")
-	b.WriteString("FROM ")
-	b.WriteString(c.signalSchema)
-	b.WriteString(".DB_CACHE_LOG WHERE (schema_name, table_name) IN (")
-
-	args := make([]any, 0, len(c.monitoredTables)*2)
+	b.WriteString("SELECT LISTAGG(ct, ', ') FROM (")
+	args := make([]any, 0, len(c.monitoredTables))
 	for i, t := range c.monitoredTables {
-		b.WriteString("(?, ?)")
-		args = append(args, t.Schema, t.Table)
+		b.WriteString("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ? ")
+		args = append(args, t.Table)
 		if i < len(c.monitoredTables)-1 {
-			b.WriteString(", ")
+			b.WriteString(" UNION ALL ")
+		} else {
+			b.WriteString(") AS t")
 		}
 	}
-	b.WriteString(") GROUP BY schema_name, table_name) AS t")
 
 	q := b.String()
 	row := c.db.QueryRowContext(ctx, q, args...)
 	var v sql.NullString
 	if err := row.Scan(&v); err != nil {
-		return "", err
+		return nil, err
 	}
 	if v.Valid {
-		return v.String, nil
+		val := v.String
+		return &val, nil
 	}
-	return "", fmt.Errorf("fingerprint query returned NULL")
-}
-
-// Close stops the background poller and releases resources owned by the cache.
-func (c *SnowflakeCache[T]) Close() {
-	if c.ticker != nil {
-		c.ticker.Stop()
-	}
-	select {
-	case <-c.stopCh:
-		// already closed
-	default:
-		close(c.stopCh)
-	}
-}
-
-// pollLoop periodically checks for staleness and reloads the cache when needed.
-func (c *SnowflakeCache[T]) pollLoop() {
-	for {
-		select {
-		case <-c.stopCh:
-			return
-		case now := <-c.ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			fp, err := c.getDbStaleCheckValue(ctx)
-			if err != nil {
-				c.logger.Printf("error getting fingerprint: %v", err)
-				cancel()
-				continue
-			}
-			// Only reload if fingerprint changed
-			c.mutex.RLock()
-			prev := c.staleCheckVal
-			c.mutex.RUnlock()
-			if prev != nil && *prev == fp {
-				// up-to-date
-				cancel()
-				continue
-			}
-			c.logger.Printf("reloading cache at %s", now.Format(time.RFC3339))
-			if err := c.loadCache(ctx, fp); err != nil {
-				c.logger.Printf("error reloading cache: %v", err)
-			}
-			cancel()
-		}
-	}
+	return nil, fmt.Errorf("fingerprint query returned NULL")
 }
 
 // loadCache executes the load SQL, rebuilds the in-memory index, and
 // stores the new fingerprint.
-func (c *SnowflakeCache[T]) loadCache(ctx context.Context, newFingerprint string) error {
+func (c *SnowflakeCache[T]) loadCache(staleCheckVal *string) error {
+	if c.staleCheckVal != nil && *c.staleCheckVal == *staleCheckVal {
+		c.logger.Printf("Cache is already up to date..")
+		return nil
+	}
+	c.logger.Printf("Loading cache %s by %s\n", c.monitoredTables, c.keyField)
+
 	var result []T
-	if err := sqlscan.Select(ctx, c.db, &result, c.loadSQL, c.sqlParameters...); err != nil {
+	if err := sqlscan.Select(context.Background(), c.db, &result, c.loadSQL, c.sqlParameters...); err != nil {
 		return err
 	}
 
@@ -191,7 +141,7 @@ func (c *SnowflakeCache[T]) loadCache(ctx context.Context, newFingerprint string
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.keyCache = newMap
-	c.staleCheckVal = &newFingerprint
+	c.staleCheckVal = staleCheckVal
 	return nil
 }
 
@@ -215,7 +165,6 @@ func CreateSnowflakeCache[T any](
 	keyField string,
 	checkInterval time.Duration,
 	db *sql.DB,
-	signalSchema string,
 	defaultSchema string,
 	sqlParams ...any,
 ) (*SnowflakeCache[T], error) {
@@ -238,7 +187,6 @@ func CreateSnowflakeCache[T any](
 	return CreateSnowflakeCacheQualified[T](
 		logger,
 		db,
-		signalSchema,
 		SQL,
 		keyField,
 		checkInterval,
@@ -253,7 +201,6 @@ func CreateSnowflakeCache[T any](
 func CreateSnowflakeCacheQualified[T any](
 	logger *log.Logger,
 	db *sql.DB,
-	signalSchema string,
 	loadSQL string,
 	keyField string,
 	checkInterval time.Duration,
@@ -262,9 +209,6 @@ func CreateSnowflakeCacheQualified[T any](
 ) (*SnowflakeCache[T], error) {
 	if db == nil {
 		return nil, fmt.Errorf("db must not be nil")
-	}
-	if signalSchema == "" {
-		return nil, fmt.Errorf("signalSchema must not be empty (schema that contains DB_CACHE_LOG)")
 	}
 	if loadSQL == "" {
 		return nil, fmt.Errorf("loadSQL must not be empty")
@@ -285,28 +229,33 @@ func CreateSnowflakeCacheQualified[T any](
 		sqlParameters:   sqlParams,
 		keyField:        keyField,
 		monitoredTables: monitoredTables,
-		signalSchema:    signalSchema,
 		logger:          logger,
-		checkInterval:   checkInterval,
 		keyCache:        make(map[string][]T),
-		stopCh:          make(chan struct{}),
 	}
 
 	// Initial load
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	fp, err := cache.getDbStaleCheckValue(ctx)
+	fp, err := cache.getDbStaleCheckValue()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get initial fingerprint: %w", err)
 	}
-	if err := cache.loadCache(ctx, fp); err != nil {
+	if err := cache.loadCache(fp); err != nil {
 		return nil, fmt.Errorf("failed to perform initial load: %w", err)
 	}
 
-	// Start background poller
-	cache.ticker = time.NewTicker(cache.checkInterval)
-	go cache.pollLoop()
+	// Start background poller (parity with Postgres)
+	go func() {
+		for now := range time.Tick(checkInterval) {
+			staleCheckVal, err := cache.getDbStaleCheckValue()
+			if err != nil {
+				cache.logger.Printf("Error in cache monitor: %v", err)
+			} else {
+				cache.logger.Printf("time to reload cache: %s", now.String())
+				if err := cache.loadCache(staleCheckVal); err != nil {
+					cache.logger.Printf("error while reloading cache: %v", err)
+				}
+			}
+		}
+	}()
 
 	return cache, nil
 }
