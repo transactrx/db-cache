@@ -121,13 +121,19 @@ else
     exit 1
 fi
 
-# Ask if user wants to keep containers running
+# Ask if user wants to keep containers running (skip if not interactive or in CI)
 echo ""
-read -p "Keep PostgreSQL container running for manual testing? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    print_status "Container kept running. Stop with: docker-compose down"
-    print_status "Connect manually with: docker-compose exec postgres psql -U testuser -d testdb"
+if [ -t 0 ] && [ "$CI" != "true" ]; then
+    read -p "Keep PostgreSQL container running for manual testing? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_status "Container kept running. Stop with: docker-compose down"
+        print_status "Connect manually with: docker-compose exec postgres psql -U testuser -d testdb"
+    else
+        print_status "Stopping containers..."
+        docker-compose down
+        print_success "Cleanup completed"
+    fi
 else
     print_status "Stopping containers..."
     docker-compose down

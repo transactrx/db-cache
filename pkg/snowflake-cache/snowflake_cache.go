@@ -37,6 +37,8 @@ type DbCache[T any] struct {
 	keyField        string
 	staleCheckVal   *string
 	logger          *log.Logger
+	logSchema       string
+	logDatabase     string
 }
 
 // Get returns the cached slice associated with the given key, or nil if missing.
@@ -78,8 +80,16 @@ func (c *DbCache[T]) ForceRefresh() error {
 func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// Build fully-qualified TABLE_LOG reference
+	logTable := "TABLE_LOG"
+	if c.logSchema != "" && c.logDatabase != "" {
+		logTable = fmt.Sprintf("%s.%s.TABLE_LOG", strings.ToUpper(c.logDatabase), strings.ToUpper(c.logSchema))
+	} else if c.logSchema != "" {
+		logTable = fmt.Sprintf("%s.TABLE_LOG", strings.ToUpper(c.logSchema))
+	}
+
 	if len(c.monitoredTables) == 1 {
-		q := "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ?"
+		q := fmt.Sprintf("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM %s WHERE table_name = ?", logTable)
 		row := c.db.(*sql.DB).QueryRowContext(ctx, q, c.monitoredTables[0])
 		var v string
 		if err := row.Scan(&v); err != nil {
@@ -93,7 +103,7 @@ func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 	b.WriteString("SELECT LISTAGG(ct, ', ') FROM (")
 	args := make([]any, 0, len(c.monitoredTables))
 	for i, t := range c.monitoredTables {
-		b.WriteString("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM CACHE.TABLE_LOG WHERE table_name = ? ")
+		b.WriteString(fmt.Sprintf("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM %s WHERE table_name = ? ", logTable))
 		args = append(args, t)
 		if i < len(c.monitoredTables)-1 {
 			b.WriteString(" UNION ALL ")
@@ -168,6 +178,21 @@ func CreateCache[T any](
 	defaultSchema string,
 	sqlParams ...any,
 ) (*DbCache[T], error) {
+	return CreateCacheWithDatabase[T](logger, SQL, monitoredTables, keyField, checkInterval, db, "", defaultSchema, sqlParams...)
+}
+
+// CreateCacheWithDatabase allows specifying both database and schema for TABLE_LOG location
+func CreateCacheWithDatabase[T any](
+	logger *log.Logger,
+	SQL string,
+	monitoredTables []string,
+	keyField string,
+	checkInterval time.Duration,
+	db any,
+	database string,
+	defaultSchema string,
+	sqlParams ...any,
+) (*DbCache[T], error) {
 	if SQL == "" {
 		return nil, fmt.Errorf("loadSQL must not be empty")
 	}
@@ -184,15 +209,21 @@ func CreateCache[T any](
 			qualified = append(qualified, SnowflakeTable{Schema: defaultSchema, Table: name})
 		}
 	}
-	return CreateSnowflakeCacheQualified[T](
+	cache, err := CreateSnowflakeCacheQualified[T](
 		logger,
 		db,
 		SQL,
 		keyField,
 		checkInterval,
+		strings.ToUpper(database),
+		strings.ToUpper(defaultSchema),
 		qualified,
 		sqlParams...,
 	)
+	if err != nil {
+		return nil, err
+	}
+	return cache, nil
 }
 
 // CreateSnowflakeCacheQualified constructs a Snowflake-backed cache when you already
@@ -204,6 +235,8 @@ func CreateSnowflakeCacheQualified[T any](
 	loadSQL string,
 	keyField string,
 	checkInterval time.Duration,
+	logDatabase string,
+	logSchema string,
 	monitoredTables []SnowflakeTable,
 	sqlParams ...any,
 ) (*DbCache[T], error) {
@@ -240,6 +273,8 @@ func CreateSnowflakeCacheQualified[T any](
 		logger:          logger,
 		keyCache:        make(map[string][]T),
 	}
+	cache.logSchema = strings.ToUpper(logSchema)
+	cache.logDatabase = strings.ToUpper(logDatabase)
 
 	// Initial load
 	fp, err := cache.getDbStaleCheckValue()
@@ -281,8 +316,20 @@ func extractKeyValue(obj any, keyField string) (string, error) {
 	if v.Kind() == reflect.Map {
 		return "", fmt.Errorf("map types are not supported for key extraction")
 	}
-	f := v.FieldByName(keyField)
-	if !f.IsValid() {
+
+	// Find struct field by name, case-insensitive (parity with Postgres cache)
+	t := v.Type()
+	var f reflect.Value
+	found := false
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+		if strings.EqualFold(sf.Name, keyField) {
+			f = v.Field(i)
+			found = true
+			break
+		}
+	}
+	if !found || !f.IsValid() {
 		return "", fmt.Errorf("field '%s' not found on cached type", keyField)
 	}
 	if f.Kind() == reflect.Pointer {

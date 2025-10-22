@@ -1,4 +1,4 @@
-package main
+package postgres_test
 
 import (
 	"context"
@@ -274,12 +274,4 @@ func TestPostgresCacheIntegration(t *testing.T) {
 		assert.Error(t, err, "Should fail with invalid key field")
 		assert.Nil(t, cache, "Cache should be nil on error")
 	})
-}
-
-// Helper function to run a single test (useful for debugging)
-func runSingleTest(testName string) {
-	fmt.Printf("Running test: %s\n", testName)
-
-	// This would be used for manual testing/debugging
-	// In practice, use: go test -run TestPostgresCacheIntegration/TestName
 }
