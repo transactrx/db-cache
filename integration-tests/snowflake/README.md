@@ -13,163 +13,339 @@ This directory contains integration tests for the db-cache library using a real 
 
 ### 1. Snowflake Database Setup
 
-Since Snowflake doesn't offer a local Docker container, you'll need to:
+Since Snowflake doesn't offer a local Docker container, you'll need access to a real Snowflake instance. The tests will automatically create the necessary schema and tables.
 
-1. **Create a Snowflake account** (if you don't have one)
-2. **Set up a test database** with the required schema
-3. **Configure environment variables** for connection
+**Required Snowflake Permissions:**
+- `USAGE` on the target database
+- `USAGE` on the target schema (or ability to create it)
+- `CREATE TABLE` on the schema
+- `INSERT`, `SELECT`, `DELETE` on tables (for test operations)
 
 ### 2. Environment Variables
 
-Set the following environment variables:
+Create a `.env` file in the project root of test folder or set these environment variables:
 
 ```bash
+# Required
 export SNOWFLAKE_ACCOUNT=your-account
 export SNOWFLAKE_USER=your-username
-export SNOWFLAKE_PASSWORD=your-password
 export SNOWFLAKE_DATABASE=your-database
-export SNOWFLAKE_SCHEMA=your-schema
-export SNOWFLAKE_WAREHOUSE=your-warehouse
+export SNOWFLAKE_SCHEMA=your-schema      # e.g., CACHE_DEV
+
+# Authentication
+export SNOWFLAKE_PRIVATE_KEY="xxgddteyyagagghrruwwosis"
+
+# Optional
+export SNOWFLAKE_WAREHOUSE=your-warehouse  # Default: COMPUTE_WH
+export SNOWFLAKE_ROLE=your-role           # If you need to specify a role
 ```
 
-**Note**: If `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, or `SNOWFLAKE_WAREHOUSE` are not set, defaults will be used:
-- Database: `TESTDB`
-- Schema: `PUBLIC`
-- Warehouse: `COMPUTE_WH`
+**Example `.env` file:**
+```bash
+SNOWFLAKE_ACCOUNT=abc12345.us-east-1
+SNOWFLAKE_USER=SA_BATCH_RW_DEV
+SNOWFLAKE_DATABASE=CPE_DEV
+SNOWFLAKE_SCHEMA=CACHE_DEV
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_ROLE=BATCHJOB_RW_DEV
+SNOWFLAKE_PRIVATE_KEY="LS0tLS1CRUdJTi..."  # Base64 encoded or PEM format
+```
 
-### 3. Database Schema Setup
+### 3. Schema and Data Setup
 
-Run the SQL scripts in the `init/` directory to set up your Snowflake database:
+**No manual setup required!** The tests automatically create all necessary objects:
 
-1. **Create schema and tables**:
+The `setupSnowflakeSchemaAndData()` function in `integration_test.go` automatically creates:
+
+1. **TABLE_LOG** - For tracking table changes (cache invalidation)
    ```sql
-   -- Run init/01-create-schema.sql
+   CREATE TABLE IF NOT EXISTS {DATABASE}.{SCHEMA}.TABLE_LOG (
+       ID INTEGER AUTOINCREMENT,
+       TABLE_NAME VARCHAR(255) NOT NULL,
+       OPERATION_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+       OPERATION_TYPE VARCHAR(10) DEFAULT 'UPDATE'
+   );
    ```
 
-2. **Insert sample data**:
+2. **API_KEYS** - Test table for API key caching
    ```sql
-   -- Run init/02-sample-data.sql
+   CREATE TABLE IF NOT EXISTS {DATABASE}.{SCHEMA}.API_KEYS (
+       ID INTEGER AUTOINCREMENT,
+       KEY VARCHAR(255) UNIQUE NOT NULL,
+       NAME VARCHAR(255) NOT NULL,
+       IS_ACTIVE BOOLEAN DEFAULT TRUE,
+       CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+   );
    ```
+
+3. **USERS** - Test table for user caching
+   ```sql
+   CREATE TABLE IF NOT EXISTS {DATABASE}.{SCHEMA}.USERS (
+       ID INTEGER AUTOINCREMENT,
+       USERNAME VARCHAR(255) UNIQUE NOT NULL,
+       EMAIL VARCHAR(255) NOT NULL,
+       ROLE VARCHAR(50) DEFAULT 'user',
+       CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+   );
+   ```
+
+4. **Sample Data** - Test data is inserted idempotently
+   - 4 API keys (3 active, 1 inactive)
+   - 4 users with different roles
+
+All setup is **idempotent** - you can run tests multiple times without conflicts.
 
 ## Running the Tests
 
-### 1. Install Dependencies
+### Using the Shell Script (Recommended)
 
 ```bash
 cd integration-tests/snowflake
-go mod tidy
+./run_tests.sh
 ```
 
-### 2. Run Tests
+The script will:
+- Check for required environment variables
+- Install dependencies
+- Run all integration tests
+- Report results
+
+### Manual Test Execution
 
 ```bash
-# Run all Snowflake integration tests
+cd integration-tests/snowflake
+
+# Install dependencies
+go mod tidy
+
+# Run all tests
 go test -v
 
 # Run specific test
 go test -v -run TestSnowflakeCacheIntegration
 
-# Run with detailed output
-go test -v -run TestSnowflakeCacheIntegration -args -test.v
+# Run with count to disable caching
+go test -v -count=1
 ```
 
-### 3. Skip Snowflake Tests (Optional)
-
-If you want to skip Snowflake tests in CI or when Snowflake is not available:
+### Run All Integration Tests (PostgreSQL + Snowflake)
 
 ```bash
-SKIP_SNOWFLAKE_TESTS=true go test
+cd integration-tests
+./run_all_tests.sh
 ```
 
 ## Test Structure
 
 The integration tests cover:
 
-### 1. Basic Cache Operations
-- `GetAll()` - Retrieves all cached records
-- `Get(key)` - Retrieves records by key
+### 1. APIKey Cache Operations
+- `GetAll()` - Retrieves all active API keys
+- `Get(key)` - Retrieves specific API key by key field
 - `ForceRefresh()` - Manually refreshes the cache
 
-### 2. Auto-Refresh Behavior
-- Tests that the cache automatically picks up database changes
-- Verifies cache invalidation works correctly
+### 2. User Cache Operations
+- Tests with a different data model (User vs APIKey)
+- Tests with different key field (USERNAME vs KEY)
+- Validates cache works with multiple types
 
-### 3. Error Handling
-- Tests behavior with invalid SQL queries
-- Tests behavior with invalid key fields
+### 3. Cache Auto-Refresh Behavior
+- Inserts new data into Snowflake
+- **Manually logs change in TABLE_LOG** (Snowflake doesn't support automatic triggers)
+- Waits for automatic cache refresh
+- Verifies cache picks up the new data
 
-### 4. Multiple Cache Types
-- Tests with different data models (APIKey, User)
-- Tests with different key fields and SQL queries
+### 4. Error Handling
+- Tests with invalid SQL queries (non-existent table)
+- Tests with invalid key fields
+- Verifies appropriate error messages
 
-## Database Schema
+## Important: TABLE_LOG Updates in Snowflake
 
-The test database includes:
+**The library now automatically sets up Snowflake Streams & Tasks** when you create a cache! 🎉
 
-### Tables
-- `API_KEYS` - Test table for API key caching
-- `USERS` - Test table for user caching
-- `CACHE.TABLE_LOG` - Monitoring table for cache invalidation
+### Automatic Setup (What Happens Behind the Scenes)
 
-### Functions
-- `LOG_TABLE_CHANGE()` - Stored procedure for monitoring changes
+When you call `dbcache.CreateCache` for Snowflake, the library automatically:
 
-### Sample Data
-- 4 API keys (3 active, 1 inactive)
-- 4 users with different roles
+1. **Creates a STREAM** for each monitored table (tracks INSERT/UPDATE/DELETE)
+2. **Creates a shared TASK** that runs every minute
+3. **Task queries all streams** and writes to TABLE_LOG when changes detected
+4. **Starts the task** automatically
+
+This provides **PostgreSQL-style automatic cache invalidation** for Snowflake!
+
+### Example:
+```go
+// Just create the cache - streams and tasks are setup automatically!
+cache, err := dbcache.CreateCache[MyType](
+    logger,
+    "SELECT ... FROM API_KEYS",
+    []string{"API_KEYS"},      // Stream created automatically
+    "ID",
+    time.Second * 60,
+    snowflakeDB,
+    "MY_DB.MY_SCHEMA",
+)
+
+// Now when data changes in API_KEYS:
+// 1. Stream detects the change
+// 2. Task writes to TABLE_LOG
+// 3. Cache auto-refreshes within 1 minute!
+```
+
+### What Gets Created:
+
+```sql
+-- Stream (one per monitored table)
+CREATE STREAM IF NOT EXISTS MY_DB.MY_SCHEMA.API_KEYS_STREAM 
+ON TABLE MY_DB.MY_SCHEMA.API_KEYS
+SHOW_INITIAL_ROWS = FALSE;
+
+-- Shared task (one for all tables)
+CREATE OR REPLACE TASK MY_DB.MY_SCHEMA.CACHE_LOG_TASK
+WAREHOUSE = COMPUTE_WH
+SCHEDULE = '1 MINUTE'
+AS
+INSERT INTO MY_DB.MY_SCHEMA.TABLE_LOG (TABLE_NAME, OPERATION_TIME, OPERATION_TYPE)
+SELECT 'API_KEYS', CURRENT_TIMESTAMP(), 'UPDATE'
+WHERE EXISTS (SELECT 1 FROM MY_DB.MY_SCHEMA.API_KEYS_STREAM 
+              WHERE METADATA$ACTION IN ('INSERT', 'UPDATE', 'DELETE'));
+
+-- Task is automatically started
+ALTER TASK MY_DB.MY_SCHEMA.CACHE_LOG_TASK RESUME;
+```
+
+### Fallback Behavior
+
+If stream/task creation fails (e.g., insufficient privileges), the cache will:
+- **Still work perfectly** - All cache operations function normally
+- **Log a warning** - You'll know auto-refresh isn't setup
+- **Allow manual refresh** - You can call `cache.ForceRefresh()` whenever needed
+
+### Requirements for Automatic Setup
+
+Your Snowflake user needs:
+- `CREATE STREAM` privilege on the schema
+- `CREATE TASK` privilege on the schema  
+- `USE WAREHOUSE` privilege (or set default warehouse)
+- Appropriate role assignment
+
+If these aren't available, cache creation will succeed but you'll get a warning. Cache will still work - you'll just need to call `ForceRefresh()` manually or manually insert into TABLE_LOG.
+
+### Manual Approach (Still Supported)
+
+If you prefer manual control, you can still insert into TABLE_LOG yourself:
+
+```go
+// Modify data
+db.Exec("INSERT INTO API_KEYS ...")
+
+// Manually log the change
+db.Exec("INSERT INTO TABLE_LOG (TABLE_NAME) VALUES ('API_KEYS')")
+```
+
+## What the Tests Actually Do
+
+1. **Connect to Snowflake** using credentials from environment
+2. **Create schema and tables** if they don't exist (idempotent)
+3. **Insert sample data** (or update if exists)
+4. **Create cache instances** using `dbcache.CreateCache` API
+5. **Test cache operations** (Get, GetAll, ForceRefresh)
+6. **Simulate data changes** and verify auto-refresh
+7. **Test error scenarios**
+8. **Clean up test data** automatically
 
 ## Troubleshooting
 
 ### Connection Issues
-```bash
-# Test connection manually
-go run -c "package main; import _ \"github.com/snowflakedb/gosnowflake\"; func main() {}"
-```
+
+**Error: Cannot connect to Snowflake**
+- Verify `SNOWFLAKE_ACCOUNT` is correct (include region if needed)
+- Check network connectivity
+- Verify credentials are correct
+
+**Error: Private key authentication failed**
+- Ensure private key is in PKCS8 format
+- Check key encoding (base64 or PEM with `\n` escaped as `\\n`)
+- Verify key matches the public key registered in Snowflake
 
 ### Permission Issues
-Ensure your Snowflake user has:
-- `CREATE TABLE` permission
-- `INSERT` permission
-- `SELECT` permission
-- `DELETE` permission (for cleanup)
 
-### Schema Issues
+**Error: SQL access control error**
 ```bash
-# Check if tables exist
-SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'PUBLIC';
+# Grant necessary permissions in Snowflake:
+GRANT USAGE ON DATABASE {DATABASE} TO ROLE {ROLE};
+GRANT USAGE ON SCHEMA {DATABASE}.{SCHEMA} TO ROLE {ROLE};
+GRANT CREATE TABLE ON SCHEMA {DATABASE}.{SCHEMA} TO ROLE {ROLE};
+GRANT INSERT, SELECT, DELETE ON ALL TABLES IN SCHEMA {DATABASE}.{SCHEMA} TO ROLE {ROLE};
+GRANT INSERT, SELECT, DELETE ON FUTURE TABLES IN SCHEMA {DATABASE}.{SCHEMA} TO ROLE {ROLE};
+GRANT ROLE {ROLE} TO USER {USER};
 ```
+
+**Error: Schema does not exist**
+- Either create the schema manually, or grant `CREATE SCHEMA` permission
+- Tests use the schema specified in `SNOWFLAKE_SCHEMA` environment variable
+
+### Test Failures
+
+**Cache not refreshing**
+- Check that TABLE_LOG is being updated
+- Verify the refresh interval (1-2 seconds in tests)
+- Look for errors in test output
+
+**Data not found**
+- Verify sample data was inserted successfully
+- Check for SQL errors during setup
+- Ensure correct database/schema context
 
 ## Cost Considerations
 
 **Important**: These tests connect to a real Snowflake instance and may incur costs:
-- **Compute costs** for running queries
-- **Storage costs** for test data
-- **Warehouse costs** for compute resources
+- **Compute costs** for query execution
+- **Storage costs** for test data (minimal)
+- **Warehouse costs** based on warehouse size
 
 To minimize costs:
-- Use a small warehouse for testing
-- Clean up test data after tests
-- Consider using a dedicated test account
-
-## Adding New Tests
-
-1. Add new test functions to `integration_test.go`
-2. Follow the naming convention: `TestSnowflakeCacheIntegration/TestName`
-3. Use `require.NoError()` for setup and `assert.*` for validations
-4. Clean up any test data you create
-5. Add documentation for new test scenarios
-
-## Performance Considerations
-
-- Tests use a 2-second cache refresh interval for responsiveness
-- Database connection is managed by the Go driver
-- Tests include cleanup to prevent data accumulation
-- Consider using `t.Parallel()` for independent tests if needed
+- Use X-Small warehouse for testing
+- Tests clean up automatically, minimizing storage
+- Consider running tests only when needed (not on every commit)
+- Use a dedicated dev/test Snowflake account
 
 ## Security Notes
 
-- Never commit Snowflake credentials to version control
-- Use environment variables or secure credential management
-- Consider using Snowflake's key pair authentication for production
-- Rotate credentials regularly
+- ✅ `.env` files are excluded by `.gitignore`
+- ✅ `private*` files are excluded by `.gitignore`
+- ✅ Never commit Snowflake credentials to version control
+- ✅ Use key-pair authentication for production
+- ✅ Rotate credentials regularly
+- ✅ Use role-based access control in Snowflake
 
+## Adding New Tests
+
+1. Add test functions to `integration_test.go` as sub-tests
+2. Use the pattern: `t.Run("Test Name", func(t *testing.T) { ... })`
+3. Use `require.NoError()` for setup assertions
+4. Use `assert.*` for test validations
+5. Clean up any additional test data you create
+6. Update this README with new test scenarios
+
+## Performance Considerations
+
+- Tests use short refresh intervals (1-2 seconds) for quick validation
+- Parallel tests are not used to avoid Snowflake connection limits
+- Sample data is minimal to reduce load
+- Connection pooling is handled by the Go Snowflake driver
+
+## Differences from PostgreSQL Tests
+
+| Aspect | PostgreSQL | Snowflake |
+|--------|-----------|-----------|
+| Connection | `*pgxpool.Pool` | `*sql.DB` |
+| Setup | Docker container | Real Snowflake instance |
+| Schema creation | Automatic via triggers | Manual grants + auto-setup |
+| Triggers | Supported | Not supported (manual TABLE_LOG updates) |
+| Cost | Free | May incur charges |
+| Speed | Fast (local) | Slower (network) |
+
+Both use the **same `dbcache.CreateCache` API**! 🎉

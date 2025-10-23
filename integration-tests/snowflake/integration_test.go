@@ -18,7 +18,7 @@ import (
 	sf "github.com/snowflakedb/gosnowflake"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	snowflakecache "github.com/transactrx/db-cache/pkg/snowflake-cache"
+	dbcache "github.com/transactrx/db-cache/pkg/db-cache"
 )
 
 // Test models that match our Snowflake database schema
@@ -252,16 +252,16 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
             ORDER BY CREATED_AT DESC
         `
 
-		// Create cache for API keys
-		cache, err := snowflakecache.CreateCacheWithDatabase[APIKey](
+		// Create cache for API keys using the unified dbcache.CreateCache interface
+		// Note: Pass schema as DB_RW parameter for Snowflake - it's a string that will be used as defaultSchema
+		cache, err := dbcache.CreateCache[APIKey](
 			logger,
 			sqlQuery,
 			[]string{"API_KEYS"}, // monitored tables
 			"KEY",                // key field
 			2*time.Second,        // check interval
-			db,                   // read-only DB
-			SNOWFLAKE_DATABASE,   // database for TABLE_LOG
-			SNOWFLAKE_SCHEMA,     // schema for TABLE_LOG
+			db,                   // Snowflake DB connection (*sql.DB)
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA, // For Snowflake: "DATABASE.SCHEMA" format
 		)
 		require.NoError(t, err, "Failed to create API key cache")
 
@@ -309,16 +309,15 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
             ORDER BY USERNAME ASC
         `
 
-		// Create cache for users
-		cache, err := snowflakecache.CreateCacheWithDatabase[User](
+		// Create cache for users using the unified dbcache.CreateCache interface
+		cache, err := dbcache.CreateCache[User](
 			logger,
 			sqlQuery,
-			[]string{"USERS"},  // monitored tables
-			"USERNAME",         // key field
-			2*time.Second,      // check interval
-			db,                 // read-only DB
-			SNOWFLAKE_DATABASE, // database for TABLE_LOG
-			SNOWFLAKE_SCHEMA,   // schema for TABLE_LOG
+			[]string{"USERS"}, // monitored tables
+			"USERNAME",        // key field
+			2*time.Second,     // check interval
+			db,                // Snowflake DB connection (*sql.DB)
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA, // For Snowflake: "DATABASE.SCHEMA" format
 		)
 		require.NoError(t, err, "Failed to create user cache")
 
@@ -349,15 +348,14 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
 		// Create a cache with a short refresh interval
 		sqlQuery := `SELECT ID AS "id", KEY AS "key", NAME AS "name", IS_ACTIVE AS "is_active", CREATED_AT AS "created_at" FROM ` + SNOWFLAKE_DATABASE + `.` + SNOWFLAKE_SCHEMA + `.API_KEYS WHERE IS_ACTIVE = TRUE`
 
-		cache, err := snowflakecache.CreateCacheWithDatabase[APIKey](
+		cache, err := dbcache.CreateCache[APIKey](
 			logger,
 			sqlQuery,
 			[]string{"API_KEYS"},
 			"KEY",
 			1*time.Second, // Very short interval for testing
 			db,
-			SNOWFLAKE_DATABASE,
-			SNOWFLAKE_SCHEMA,
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA,
 		)
 		require.NoError(t, err, "Failed to create cache for auto-refresh test")
 
@@ -406,15 +404,14 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
 		// Test with invalid SQL
 		invalidSQL := `SELECT INVALID_COLUMN FROM ` + SNOWFLAKE_DATABASE + `.` + SNOWFLAKE_SCHEMA + `.NON_EXISTENT_TABLE`
 
-		cache, err := snowflakecache.CreateCacheWithDatabase[APIKey](
+		cache, err := dbcache.CreateCache[APIKey](
 			logger,
 			invalidSQL,
 			[]string{"API_KEYS"},
 			"KEY",
 			2*time.Second,
 			db,
-			SNOWFLAKE_DATABASE,
-			SNOWFLAKE_SCHEMA,
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA,
 		)
 		assert.Error(t, err, "Should fail with invalid SQL")
 		assert.Nil(t, cache, "Cache should be nil on error")
@@ -422,15 +419,14 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
 		// Test with invalid key field
 		validSQL := `SELECT ID AS "id", KEY AS "key", NAME AS "name", IS_ACTIVE AS "is_active", CREATED_AT AS "created_at" FROM ` + SNOWFLAKE_DATABASE + `.` + SNOWFLAKE_SCHEMA + `.API_KEYS WHERE IS_ACTIVE = TRUE`
 
-		cache, err = snowflakecache.CreateCacheWithDatabase[APIKey](
+		cache, err = dbcache.CreateCache[APIKey](
 			logger,
 			validSQL,
 			[]string{"API_KEYS"},
 			"INVALID_FIELD", // invalid key field
 			2*time.Second,
 			db,
-			SNOWFLAKE_DATABASE,
-			SNOWFLAKE_SCHEMA,
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA,
 		)
 		assert.Error(t, err, "Should fail with invalid key field")
 		assert.Nil(t, cache, "Cache should be nil on error")

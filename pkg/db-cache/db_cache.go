@@ -155,11 +155,18 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 		if !ok {
 			return nil, fmt.Errorf("unsupported DB type: expected *pgxpool.Pool or *sql.DB")
 		}
-		var defaultSchema string
+		var database, defaultSchema string
 		if s, ok := DB_RW.(string); ok {
-			defaultSchema = s
+			// Parse "DATABASE.SCHEMA" format or just "SCHEMA"
+			parts := strings.Split(s, ".")
+			if len(parts) == 2 {
+				database = parts[0]
+				defaultSchema = parts[1]
+			} else {
+				defaultSchema = s
+			}
 		}
-		return snowflakecache.CreateCache[T](logger, SQL, monitoredTables, keyField, cacheCheckInterval, sfDB, defaultSchema, SQLParams...)
+		return snowflakecache.CreateCacheWithDatabase[T](logger, SQL, monitoredTables, keyField, cacheCheckInterval, sfDB, database, defaultSchema, SQLParams...)
 	}
 
 	// Postgres path (unchanged)
