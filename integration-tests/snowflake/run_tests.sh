@@ -43,6 +43,21 @@ print_status "Prerequisites check passed ✓"
 # Change to snowflake integration-tests directory
 cd "$(dirname "$0")"
 
+# Auto-load environment variables from .env if present (does not override existing env)
+if [ -f ".env" ]; then
+    print_status "Loading environment from $(pwd)/.env"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+elif [ -f "../../.env" ]; then
+    print_status "Loading environment from $(cd ../.. && pwd)/.env"
+    set -a
+    # shellcheck disable=SC1091
+    . ../../.env
+    set +a
+fi
+
 # Check if Snowflake tests should be skipped
 if [ "$SKIP_SNOWFLAKE_TESTS" = "true" ]; then
     print_warning "Snowflake tests are disabled (SKIP_SNOWFLAKE_TESTS=true)"

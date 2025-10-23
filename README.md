@@ -43,11 +43,11 @@ END;
 $$ LANGUAGE plpgsql;;
 ```
 
-## Using this library with Snowflake
+## Using this library with Snowflake (Unified API)
 
-This repo also provides a Snowflake-backed cache that uses a persistent change signal in Snowflake (see `snowflakeCache.md`). Unlike Postgres (which uses triggers to update `table_log`), Snowflake relies on Streams and a centralized Task that writes heartbeats into a durable table `DB_CACHE_LOG`. Your application only reads `DB_CACHE_LOG` and reloads when the fingerprint changes.
+This repo provides a unified cache API for both Postgres and Snowflake via `dbcache.CreateCache`. Unlike Postgres (which uses triggers to update `table_log`), Snowflake does not support triggers in the same way. For Snowflake, you should rely on a durable change signal table (e.g., `TABLE_LOG`) that is updated by a centralized background process (Streams + Task) or by your application logic.
 
-### Minimal example
+### Minimal example (Snowflake)
 
 ```go
 package main
@@ -59,7 +59,7 @@ import (
     "time"
 
     _ "github.com/snowflakedb/gosnowflake" // register Snowflake driver
-    snowflakecache "github.com/transactrx/db-cache/pkg/snowflake-cache"
+    dbcache "github.com/transactrx/db-cache/pkg/db-cache"
 )
 
 type ApiKey struct {
@@ -80,26 +80,24 @@ func main() {
     defer db.Close()
     if err := db.PingContext(context.Background()); err != nil { log.Fatal(err) }
 
-    // The schema that contains DB_CACHE_LOG (see snowflakeCache.md provisioning)
-    signalSchema := "UTILS"
-
     // Load SQL for your dataset
-    loadSQL := "SELECT id, api_key, user_id, is_active, created_at, updated_at FROM api_keys WHERE is_active = TRUE"
+    loadSQL := "SELECT ID AS \"id\", API_KEY AS \"api_key\", USER_ID AS \"user_id\", IS_ACTIVE AS \"is_active\", CREATED_AT AS \"created_at\", UPDATED_AT AS \"updated_at\" FROM PUBLIC.API_KEYS WHERE IS_ACTIVE = TRUE"
 
-    // Tables to monitor for invalidation (schema + table)
-    monitored := []snowflakecache.SnowflakeTable{{Schema: "PUBLIC", Table: "API_KEYS"}}
+    // Monitored tables for invalidation (unqualified names use default schema)
+    monitored := []string{"API_KEYS"}
 
-    cache, err := snowflakecache.CreateSnowflakeCache[ApiKey](
-        nil,            // logger (nil -> default)
-        db,             // *sql.DB using gosnowflake
-        signalSchema,   // schema that hosts DB_CACHE_LOG
-        loadSQL,        // SELECT to populate cache
-        "UserID",       // key field on struct (string or *string)
-        5*time.Second,  // poll interval
-        monitored,      // monitored tables
+    // Create cache using the unified API.
+    // For Snowflake, pass the TABLE_LOG location as "DATABASE.SCHEMA" in the DB_RW parameter.
+    cache, err := dbcache.CreateCache[ApiKey](
+        nil,             // logger (nil -> default)
+        loadSQL,         // SELECT to populate cache
+        monitored,       // monitored tables (for invalidation)
+        "UserID",        // key field on struct (string or *string)
+        5*time.Second,   // poll interval
+        db,              // *sql.DB (gosnowflake)
+        "MY_DB.MY_SCHEMA", // TABLE_LOG location: Database.Schema
     )
     if err != nil { log.Fatal(err) }
-    defer cache.Close()
 
     // Lookups
     user1Keys := cache.Get("user1")
@@ -114,54 +112,49 @@ func main() {
 
 ### Provisioning required for Snowflake
 
-- A centralized Task and per-table Streams must be provisioned to write heartbeats into `DB_CACHE_LOG` (the durable change signal). See `snowflakeCache.md` for exact DDL and procedures.
-- The application typically needs only `SELECT` on `DB_CACHE_LOG` and no privileges on Streams/Tasks.
+- Create a durable change signal table (e.g., `TABLE_LOG`) in a chosen schema (e.g., `MY_DB.MY_SCHEMA`).
+- A centralized Task and per-table Streams (or application-side logging) should write entries into `TABLE_LOG` when monitored tables change.
+- The library does not create Tasks. It relies on `TABLE_LOG` being updated by your platform. See `integration-tests/snowflake/README.md` for recommended approaches (Streams + Task, stored procedures, or application-level logging).
 
 ### Interface differences (Postgres vs Snowflake)
 
-- Constructor:
-  - Postgres: `dbcache.CreateCache[T](logger, sql, monitoredTables []string, keyField string, interval, DB, DB_RW, params...) (*DbCache[T], error)`
-  - Snowflake: `snowflakecache.CreateSnowflakeCache[T](logger, db *sql.DB, signalSchema string, loadSQL string, keyField string, interval, monitored []SnowflakeTable, params...) (*SnowflakeCache[T], error)`
+- Constructor (Unified):
+  - `dbcache.CreateCache[T](logger, sql, monitoredTables []string, keyField string, interval, DB, DB_RW, params...) (Cache[T], error)`
+- DB parameter types:
+  - Postgres: `DB` is `*pgxpool.Pool`; `DB_RW` is `*pgxpool.Pool` (used to create triggers).
+  - Snowflake: `DB` is `*sql.DB` (gosnowflake); `DB_RW` is a string `"DATABASE.SCHEMA"` that points to where `TABLE_LOG` resides.
 - Key field type:
-  - Postgres: expects an exported field (commonly `*string`).
-  - Snowflake: exported `string` or `*string` is accepted.
+  - Postgres and Snowflake accept `string` or `*string` exported fields.
 - Invalidation source:
-  - Postgres: triggers update `table_log` (the library can help create them).
-  - Snowflake: a centralized Task consumes Streams and writes to `DB_CACHE_LOG` (provisioned separately).
-- Lifecycle:
-  - Both provide `Get`, `GetAll`, and `ForceRefresh`.
-  - Snowflake cache also exposes `Close()` to stop its background poller.
+  - Postgres: triggers update `table_log` (the library can create the required functions/triggers).
+  - Snowflake: your centralized process updates `TABLE_LOG` (Streams + Task or application-level logging).
 
-For full Snowflake design and setup steps, see `snowflakeCache.md`.
+For Snowflake provisioning and examples, see `integration-tests/snowflake/README.md`.
 
 ### Migration: Postgres → Snowflake (minimal changes)
 
-To minimize disruption, a compatibility constructor mirrors the Postgres parameter order and semantics:
+Your call-site remains largely the same; the unified constructor adapts based on DB type:
 
 ```go
-// Postgres (existing)
+// Postgres
 cache, _ := dbcache.CreateCache[T](
     logger,
     sql,
     []string{"api_keys"},
     "UserID",
     5*time.Second,
-    DB, DB_RW,
+    pgxReadPool,   // *pgxpool.Pool
+    pgxWritePool,  // *pgxpool.Pool
 )
 
-// Snowflake (compat constructor)
-cache, _ := snowflakecache.CreateSnowflakeCacheCompat[T](
+// Snowflake
+cache, _ := dbcache.CreateCache[T](
     logger,
     sql,
-    []string{"PUBLIC.API_KEYS"}, // or []string{"API_KEYS"} with defaultSchema below
+    []string{"API_KEYS"},
     "UserID",
     5*time.Second,
-    db,              // *sql.DB (gosnowflake)
-    "UTILS",        // signalSchema (schema that hosts DB_CACHE_LOG)
-    "PUBLIC",       // defaultSchema (used if tables are unqualified)
+    snowflakeDB,              // *sql.DB (gosnowflake)
+    "MY_DB.MY_SCHEMA",       // TABLE_LOG location
 )
 ```
-
-- Keep: `logger`, `sql`, `monitoredTables ([]string)`, `keyField`, `interval`.
-- Change: supply `db *sql.DB`, `signalSchema` (e.g., `UTILS`), and `defaultSchema` (e.g., `PUBLIC`).
-- Methods remain the same: `Get`, `GetAll`, `ForceRefresh`. Snowflake also offers `Close()` to stop the background poller.
