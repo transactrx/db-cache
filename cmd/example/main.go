@@ -11,16 +11,7 @@ import (
 	dbcache "github.com/transactrx/db-cache/pkg/db-cache"
 )
 
-// Example struct for PostgreSQL
-type ApiKey2 struct {
-	Key           string  `db:"key"`
-	Description   string  `db:"description"`
-	Configuration *string `db:"configuration"`
-	Name          string  `db:"name"`
-	MaxDailyRate  int     `db:"max_daily_rate"`
-	Volumes       *string `db:"volumes"`
-	ClientID      string  `db:"clientid"`
-}
+// ApiKey2 type is defined in apiKeyModel.go
 
 // Example usage for PostgreSQL
 func postgresExample() {
