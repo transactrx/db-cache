@@ -18,7 +18,7 @@ import (
 // Note: Field names must match the database column names for the cache to work
 type APIKey struct {
 	ID        int       `db:"id"`
-	Key       string    `db:"key"`
+	Key       *string   `db:"key"`
 	Name      string    `db:"name"`
 	IsActive  bool      `db:"is_active"`
 	CreatedAt time.Time `db:"created_at"`
@@ -26,7 +26,7 @@ type APIKey struct {
 
 type User struct {
 	ID        int       `db:"id"`
-	Username  string    `db:"username"`
+	Username  *string   `db:"username"`
 	Email     string    `db:"email"`
 	Role      string    `db:"role"`
 	CreatedAt time.Time `db:"created_at"`
@@ -116,7 +116,7 @@ func TestPostgresCacheIntegration(t *testing.T) {
 			logger,
 			sqlQuery,
 			[]string{"api_keys"}, // monitored tables
-			"key",                // key field
+			"Key",                // key field (matches struct field name)
 			2*time.Second,        // check interval
 			db,                   // read-only DB
 			db,                   // read-write DB
@@ -131,7 +131,9 @@ func TestPostgresCacheIntegration(t *testing.T) {
 		// Verify we got the expected active keys
 		expectedKeys := []string{"api_key_1", "api_key_2", "api_key_4"}
 		for _, key := range allKeys {
-			assert.Contains(t, expectedKeys, key.Key, "Should only return active keys")
+			if assert.NotNil(t, key.Key) {
+				assert.Contains(t, expectedKeys, *key.Key, "Should only return active keys")
+			}
 			assert.True(t, key.IsActive, "All returned keys should be active")
 		}
 
@@ -139,7 +141,9 @@ func TestPostgresCacheIntegration(t *testing.T) {
 		key1Data := cache.Get("api_key_1")
 		assert.NotEmpty(t, key1Data, "Get should return data for existing key")
 		assert.Len(t, key1Data, 1, "Should return exactly one record for unique key")
-		assert.Equal(t, "api_key_1", key1Data[0].Key, "Should return correct key")
+		if assert.NotNil(t, key1Data[0].Key) {
+			assert.Equal(t, "api_key_1", *key1Data[0].Key, "Should return correct key")
+		}
 
 		// Test Get with non-existent key
 		nonExistentData := cache.Get("non_existent_key")
@@ -167,7 +171,7 @@ func TestPostgresCacheIntegration(t *testing.T) {
 			logger,
 			sqlQuery,
 			[]string{"users"}, // monitored tables
-			"username",        // key field
+			"Username",        // key field (matches struct field name)
 			2*time.Second,     // check interval
 			db,                // read-only DB
 			db,                // read-write DB
@@ -182,14 +186,18 @@ func TestPostgresCacheIntegration(t *testing.T) {
 		// Verify we got the expected users
 		expectedUsernames := []string{"alice", "bob", "charlie", "diana"}
 		for _, user := range allUsers {
-			assert.Contains(t, expectedUsernames, user.Username, "Should return expected users")
+			if assert.NotNil(t, user.Username) {
+				assert.Contains(t, expectedUsernames, *user.Username, "Should return expected users")
+			}
 		}
 
 		// Test Get with specific username
 		aliceData := cache.Get("alice")
 		assert.NotEmpty(t, aliceData, "Get should return data for existing user")
 		assert.Len(t, aliceData, 1, "Should return exactly one record for unique username")
-		assert.Equal(t, "alice", aliceData[0].Username, "Should return correct username")
+		if assert.NotNil(t, aliceData[0].Username) {
+			assert.Equal(t, "alice", *aliceData[0].Username, "Should return correct username")
+		}
 		assert.Equal(t, "admin", aliceData[0].Role, "Should return correct role")
 
 		// Test Get with non-existent user
@@ -205,7 +213,7 @@ func TestPostgresCacheIntegration(t *testing.T) {
 			logger,
 			sqlQuery,
 			[]string{"api_keys"},
-			"key",
+			"Key",
 			1*time.Second, // Very short interval for testing
 			db,
 			db,
@@ -236,7 +244,9 @@ func TestPostgresCacheIntegration(t *testing.T) {
 		// Verify the new record is in the cache
 		newRecordData := cache.Get("test_auto_refresh_key")
 		assert.NotEmpty(t, newRecordData, "New record should be accessible via cache")
-		assert.Equal(t, "test_auto_refresh_key", newRecordData[0].Key, "Should return correct new record")
+		if assert.NotNil(t, newRecordData[0].Key) {
+			assert.Equal(t, "test_auto_refresh_key", *newRecordData[0].Key, "Should return correct new record")
+		}
 
 		// Clean up test record
 		_, err = db.Exec(context.Background(), `DELETE FROM api_keys WHERE key = $1`, "test_auto_refresh_key")
@@ -251,7 +261,7 @@ func TestPostgresCacheIntegration(t *testing.T) {
 			logger,
 			invalidSQL,
 			[]string{"api_keys"},
-			"key",
+			"Key",
 			2*time.Second,
 			db,
 			db,
