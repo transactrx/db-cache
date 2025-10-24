@@ -1,8 +1,5 @@
--- Create schema for cache monitoring
-CREATE SCHEMA IF NOT EXISTS cache;
-
 -- Create table_log for monitoring table changes
-CREATE TABLE IF NOT EXISTS cache.table_log (
+CREATE TABLE IF NOT EXISTS table_log (
     id SERIAL PRIMARY KEY,
     table_name VARCHAR(255) NOT NULL,
     operation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -30,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE OR REPLACE FUNCTION log_table_change()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO cache.table_log (table_name, operation_time, operation_type)
+    INSERT INTO table_log (table_name, operation_time, operation_type)
     VALUES (TG_TABLE_NAME, CURRENT_TIMESTAMP, TG_OP);
     RETURN COALESCE(NEW, OLD);
 END;

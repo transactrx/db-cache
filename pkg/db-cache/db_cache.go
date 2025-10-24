@@ -78,11 +78,11 @@ func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 func generateStaleCheckSQL(monitoredTables []string) string {
 	var checkQuery string
 	if len(monitoredTables) == 1 {
-		checkQuery = fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from cache.table_log where table_name='%s' ", monitoredTables[0])
+		checkQuery = fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[0])
 	} else {
 		checkQuery = "select string_agg(ct, ', ') from ("
 		for i := 0; i < len(monitoredTables); i++ {
-			checkQuery = checkQuery + fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from cache.table_log where table_name='%s' ", monitoredTables[i])
+			checkQuery = checkQuery + fmt.Sprintf("select count(*) || cast(case when max(operation_time) is null then '1980-01-01' else max(operation_time) end as varchar) as ct from table_log where table_name='%s' ", monitoredTables[i])
 			if i < len(monitoredTables)-1 {
 				checkQuery = checkQuery + " union all "
 			} else {
@@ -254,35 +254,10 @@ func getKeyValue(obj any, keyField string) (string, error) {
 		}
 		return "", fmt.Errorf("specified key field '%s' is not part of the query results", keyField)
 	} else {
-		// Find field by name (case-insensitive)
-		objType := reflect.TypeOf(obj)
-		var fv reflect.Value
-		found := false
-
-		for i := 0; i < objType.NumField(); i++ {
-			field := objType.Field(i)
-			if strings.EqualFold(field.Name, keyField) {
-				fv = reflect.Indirect(objValue).Field(i)
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			return "", fmt.Errorf("field %s is not found in the struct", keyField)
-		}
-
+		fv := reflect.Indirect(objValue).FieldByName(keyField)
 		if !fv.IsValid() {
-			return "", fmt.Errorf("field %s is not valid", keyField)
+			return "", fmt.Errorf("field %s is not found in the APIKey struct", keyField)
 		}
-
-		// Handle both string and *string fields
-		if fv.Kind() == reflect.Ptr {
-			if fv.IsNil() {
-				return "", fmt.Errorf("key field %s is nil", keyField)
-			}
-			return fv.Elem().String(), nil
-		}
-		return fv.String(), nil
+		return fv.Elem().String(), nil
 	}
 }

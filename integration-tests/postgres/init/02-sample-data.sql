@@ -14,6 +14,6 @@ INSERT INTO users (username, email, role) VALUES
 ON CONFLICT (username) DO NOTHING;
 
 -- Insert initial log entries to establish baseline
-INSERT INTO cache.table_log (table_name, operation_time, operation_type) VALUES 
+INSERT INTO table_log (table_name, operation_time, operation_type) VALUES 
     ('api_keys', CURRENT_TIMESTAMP, 'INSERT'),
     ('users', CURRENT_TIMESTAMP, 'INSERT');
