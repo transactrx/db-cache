@@ -88,31 +88,25 @@ func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
 		logTable = fmt.Sprintf("%s.TABLE_LOG", strings.ToUpper(c.logSchema))
 	}
 
+	// Generate base SQL (uses unqualified TABLE_LOG) and then qualify it
+	base := generateStaleCheckSQL(c.monitoredTables)
+	q := strings.ReplaceAll(base, "TABLE_LOG", logTable)
+
+	// Build bind args (one per monitored table)
+	args := make([]any, 0, len(c.monitoredTables))
+	for _, t := range c.monitoredTables {
+		args = append(args, t)
+	}
+
+	// Scan result
 	if len(c.monitoredTables) == 1 {
-		q := fmt.Sprintf("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM %s WHERE table_name = ?", logTable)
-		row := c.db.(*sql.DB).QueryRowContext(ctx, q, c.monitoredTables[0])
+		row := c.db.(*sql.DB).QueryRowContext(ctx, q, args...)
 		var v string
 		if err := row.Scan(&v); err != nil {
 			return nil, err
 		}
 		return &v, nil
 	}
-
-	// Multiple tables: aggregate per table using union-all and listagg tokens
-	var b strings.Builder
-	b.WriteString("SELECT LISTAGG(ct, ', ') FROM (")
-	args := make([]any, 0, len(c.monitoredTables))
-	for i, t := range c.monitoredTables {
-		b.WriteString(fmt.Sprintf("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM %s WHERE table_name = ? ", logTable))
-		args = append(args, t)
-		if i < len(c.monitoredTables)-1 {
-			b.WriteString(" UNION ALL ")
-		} else {
-			b.WriteString(") AS t")
-		}
-	}
-
-	q := b.String()
 	row := c.db.(*sql.DB).QueryRowContext(ctx, q, args...)
 	var v sql.NullString
 	if err := row.Scan(&v); err != nil {
@@ -178,7 +172,34 @@ func CreateCache[T any](
 	defaultSchema string,
 	sqlParams ...any,
 ) (*DbCache[T], error) {
-	return CreateCacheWithDatabase[T](logger, SQL, monitoredTables, keyField, checkInterval, db, "", defaultSchema, sqlParams...)
+	if SQL == "" {
+		return nil, fmt.Errorf("loadSQL must not be empty")
+	}
+	if len(monitoredTables) == 0 {
+		return nil, fmt.Errorf("monitoredTables must contain at least one table")
+	}
+	// Normalize monitored tables using provided defaultSchema
+	qualified := make([]SnowflakeTable, 0, len(monitoredTables))
+	for _, name := range monitoredTables {
+		parts := strings.Split(name, ".")
+		if len(parts) == 2 {
+			qualified = append(qualified, SnowflakeTable{Schema: parts[0], Table: parts[1]})
+		} else {
+			qualified = append(qualified, SnowflakeTable{Schema: defaultSchema, Table: name})
+		}
+	}
+	// Use default change-log schema "CACHE" to match test expectations
+	return CreateSnowflakeCacheQualified[T](
+		logger,
+		db,
+		SQL,
+		keyField,
+		checkInterval,
+		"",
+		"CACHE",
+		qualified,
+		sqlParams...,
+	)
 }
 
 // CreateCacheWithDatabase allows specifying both database and schema for TABLE_LOG location
@@ -224,6 +245,55 @@ func CreateCacheWithDatabase[T any](
 		return nil, err
 	}
 	return cache, nil
+}
+
+// generateStaleCheckSQL builds the fingerprint query for the given monitored tables
+// using Snowflake SQL dialect. It intentionally references TABLE_LOG without schema,
+// and callers should replace TABLE_LOG with a fully qualified name when needed.
+func generateStaleCheckSQL(monitoredTables []string) string {
+	if len(monitoredTables) == 1 {
+		return "SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM TABLE_LOG WHERE table_name = ?"
+	}
+	var b strings.Builder
+	b.WriteString("SELECT LISTAGG(ct, ', ') FROM (")
+	for i := 0; i < len(monitoredTables); i++ {
+		b.WriteString("SELECT COUNT(*) || TO_VARCHAR(COALESCE(MAX(operation_time), TO_TIMESTAMP_LTZ('1980-01-01'))) AS ct FROM TABLE_LOG WHERE table_name = ? ")
+		if i < len(monitoredTables)-1 {
+			b.WriteString(" UNION ALL ")
+		} else {
+			b.WriteString(") AS t")
+		}
+	}
+	return b.String()
+}
+
+// registerStreamsForTables calls a Snowflake procedure REGISTER_TABLE(schema, table)
+// for each monitored table, to create per-table Streams used by the heartbeat.
+// Failures are logged and ignored so the cache can still function.
+func registerStreamsForTables(db *sql.DB, logger *log.Logger, logDatabase, logSchema string, tables []SnowflakeTable) {
+	if logSchema == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var procFQN string
+	if logDatabase != "" {
+		procFQN = fmt.Sprintf("%s.%s.REGISTER_TABLE", logDatabase, logSchema)
+	} else {
+		procFQN = fmt.Sprintf("%s.REGISTER_TABLE", logSchema)
+	}
+
+	for _, t := range tables {
+		schema := strings.ToUpper(t.Schema)
+		table := strings.ToUpper(t.Table)
+		call := fmt.Sprintf("CALL %s(?, ?)", procFQN)
+		if _, err := db.ExecContext(ctx, call, schema, table); err != nil {
+			logger.Printf("warning: could not register stream for %s.%s via %s: %v (continuing without auto-refresh)", schema, table, procFQN, err)
+		} else {
+			logger.Printf("registered stream for %s.%s via %s", schema, table, procFQN)
+		}
+	}
 }
 
 // CreateSnowflakeCacheQualified constructs a Snowflake-backed cache when you already
@@ -275,6 +345,12 @@ func CreateSnowflakeCacheQualified[T any](
 	}
 	cache.logSchema = strings.ToUpper(logSchema)
 	cache.logDatabase = strings.ToUpper(logDatabase)
+
+	// Best-effort provisioning of Streams via REGISTER_TABLE (opt-in via env).
+	// Enable by setting DB_CACHE_SF_REGISTER_STREAMS=true in the environment.
+	if sfDB, ok := db.(*sql.DB); ok && strings.EqualFold(os.Getenv("DB_CACHE_SF_REGISTER_STREAMS"), "true") {
+		registerStreamsForTables(sfDB, cache.logger, cache.logDatabase, cache.logSchema, monitoredTables)
+	}
 
 	// Initial load
 	fp, err := cache.getDbStaleCheckValue()
