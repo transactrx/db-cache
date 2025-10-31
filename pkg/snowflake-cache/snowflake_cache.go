@@ -267,8 +267,9 @@ func generateStaleCheckSQL(monitoredTables []string) string {
 	return b.String()
 }
 
-// registerStreamsForTables calls a Snowflake procedure REGISTER_TABLE(schema, table)
+// registerStreamsForTables calls the Snowflake REGISTERCACHETABLE procedure
 // for each monitored table, to create per-table Streams used by the heartbeat.
+// Procedure signature: REGISTERCACHETABLE(DB_NAME, SCHEMA_NAME, TABLE_NAME)
 // Failures are logged and ignored so the cache can still function.
 func registerStreamsForTables(db *sql.DB, logger *log.Logger, logDatabase, logSchema string, tables []SnowflakeTable) {
 	if logSchema == "" {
@@ -279,19 +280,24 @@ func registerStreamsForTables(db *sql.DB, logger *log.Logger, logDatabase, logSc
 
 	var procFQN string
 	if logDatabase != "" {
-		procFQN = fmt.Sprintf("%s.%s.REGISTER_TABLE", logDatabase, logSchema)
+		procFQN = fmt.Sprintf("%s.%s.REGISTERCACHETABLE", logDatabase, logSchema)
 	} else {
-		procFQN = fmt.Sprintf("%s.REGISTER_TABLE", logSchema)
+		procFQN = fmt.Sprintf("%s.REGISTERCACHETABLE", logSchema)
 	}
 
 	for _, t := range tables {
 		schema := strings.ToUpper(t.Schema)
 		table := strings.ToUpper(t.Table)
-		call := fmt.Sprintf("CALL %s(?, ?)", procFQN)
-		if _, err := db.ExecContext(ctx, call, schema, table); err != nil {
-			logger.Printf("warning: could not register stream for %s.%s via %s: %v (continuing without auto-refresh)", schema, table, procFQN, err)
+		database := strings.ToUpper(logDatabase)
+		if database == "" {
+			// If no database specified, try to infer from schema or use empty
+			database = ""
+		}
+		call := fmt.Sprintf("CALL %s(?, ?, ?)", procFQN)
+		if _, err := db.ExecContext(ctx, call, database, schema, table); err != nil {
+			logger.Printf("warning: could not register stream for %s.%s.%s via %s: %v (continuing without auto-refresh)", database, schema, table, procFQN, err)
 		} else {
-			logger.Printf("registered stream for %s.%s via %s", schema, table, procFQN)
+			logger.Printf("registered stream for %s.%s.%s via %s", database, schema, table, procFQN)
 		}
 	}
 }

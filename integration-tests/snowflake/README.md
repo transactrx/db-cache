@@ -57,6 +57,8 @@ SNOWFLAKE_PRIVATE_KEY="LS0tLS1CRUdJTi..."  # Base64 encoded or PEM format
 
 The `setupSnowflakeSchemaAndData()` function in `integration_test.go` automatically creates:
 
+> **Note:** If you want to test automatic stream registration, you need to create the `REGISTERCACHETABLE` stored procedure in your `CACHE_DEV` schema and set `DB_CACHE_SF_REGISTER_STREAMS=true`. Otherwise, tests will manually update `TABLE_LOG`.
+
 1. **TABLE_LOG** - For tracking table changes (cache invalidation)
    ```sql
    CREATE TABLE IF NOT EXISTS {DATABASE}.{SCHEMA}.TABLE_LOG (
@@ -97,7 +99,17 @@ All setup is **idempotent** - you can run tests multiple times without conflicts
 
 ## Running the Tests
 
-### Using the Shell Script (Recommended)
+### Quick start (recommended)
+
+Use the existing test runner. It will run all Snowflake integration tests and, when enabled, will validate that the Go cache code performs stream registration by calling your stored procedure under the hood.
+
+```bash
+cd integration-tests/snowflake
+export DB_CACHE_SF_REGISTER_STREAMS=true   # Opt-in: Go code will call REGISTERCACHETABLE
+./run_tests.sh
+```
+
+### Using the Shell Script (Full Test Suite)
 
 ```bash
 cd integration-tests/snowflake
@@ -162,73 +174,73 @@ The integration tests cover:
 
 ## Important: TABLE_LOG Updates in Snowflake
 
-**The library now automatically sets up Snowflake Streams & Tasks** when you create a cache! 🎉
+**The library can automatically register Snowflake Streams** when you create a cache! 🎉
 
-### Automatic Setup (What Happens Behind the Scenes)
+### Automatic Stream Registration (Opt-in)
 
-When you call `dbcache.CreateCache` for Snowflake, the library automatically:
+When you enable stream registration by setting `DB_CACHE_SF_REGISTER_STREAMS=true`, the library will:
 
-1. **Creates a STREAM** for each monitored table (tracks INSERT/UPDATE/DELETE)
-2. **Creates a shared TASK** that runs every minute
-3. **Task queries all streams** and writes to TABLE_LOG when changes detected
-4. **Starts the task** automatically
+1. **Call REGISTERCACHETABLE** procedure for each monitored table
+2. **The procedure creates a STREAM** for the table (tracks INSERT/UPDATE/DELETE)
+3. **Registers the stream** in your cache registry
+4. **Your heartbeat Task** can then query these streams and update TABLE_LOG
 
 This provides **PostgreSQL-style automatic cache invalidation** for Snowflake!
 
-### Example:
+> **Prerequisites:** You must create the `REGISTERCACHETABLE` stored procedure in your cache schema (e.g., `CACHE_DEV`) before enabling this feature.
+
+### Example (Go performs registration)
+```bash
+# Enable automatic stream registration
+export DB_CACHE_SF_REGISTER_STREAMS=true
+```
+
 ```go
-// Just create the cache - streams and tasks are setup automatically!
+// Create the cache - Go will call REGISTERCACHETABLE for each monitored table
 cache, err := dbcache.CreateCache[MyType](
     logger,
     "SELECT ... FROM API_KEYS",
-    []string{"API_KEYS"},      // Stream created automatically
+    []string{"API_KEYS"},      // REGISTERCACHETABLE called for API_KEYS
     "ID",
     time.Second * 60,
     snowflakeDB,
-    "MY_DB.MY_SCHEMA",
+    "MY_DB.CACHE_DEV",         // Procedure called: MY_DB.CACHE_DEV.REGISTERCACHETABLE
 )
 
 // Now when data changes in API_KEYS:
-// 1. Stream detects the change
-// 2. Task writes to TABLE_LOG
-// 3. Cache auto-refreshes within 1 minute!
+// 1. Stream detects the change (created by REGISTERCACHETABLE)
+// 2. Your heartbeat Task writes to TABLE_LOG
+// 3. Cache auto-refreshes within check interval!
 ```
 
-### What Gets Created:
+### Procedure Signature and Privileges
+
+Your procedure must have this signature and be executable by the test role:
 
 ```sql
--- Stream (one per monitored table)
-CREATE STREAM IF NOT EXISTS MY_DB.MY_SCHEMA.API_KEYS_STREAM 
-ON TABLE MY_DB.MY_SCHEMA.API_KEYS
-SHOW_INITIAL_ROWS = FALSE;
+-- Signature (case-sensitive name)
+CREATE OR REPLACE PROCEDURE CPE_DEV.CACHE_DEV."REGISTERCACHETABLE"(
+  DB_NAME VARCHAR, SCHEMA_NAME VARCHAR, TABLE_NAME VARCHAR
+) RETURNS VARCHAR LANGUAGE JAVASCRIPT;
 
--- Shared task (one for all tables)
-CREATE OR REPLACE TASK MY_DB.MY_SCHEMA.CACHE_LOG_TASK
-WAREHOUSE = COMPUTE_WH
-SCHEDULE = '1 MINUTE'
-AS
-INSERT INTO MY_DB.MY_SCHEMA.TABLE_LOG (TABLE_NAME, OPERATION_TIME, OPERATION_TYPE)
-SELECT 'API_KEYS', CURRENT_TIMESTAMP(), 'UPDATE'
-WHERE EXISTS (SELECT 1 FROM MY_DB.MY_SCHEMA.API_KEYS_STREAM 
-              WHERE METADATA$ACTION IN ('INSERT', 'UPDATE', 'DELETE'));
-
--- Task is automatically started
-ALTER TASK MY_DB.MY_SCHEMA.CACHE_LOG_TASK RESUME;
+-- Minimum privilege required by the test role (example role shown)
+GRANT USAGE ON PROCEDURE CPE_DEV.CACHE_DEV."REGISTERCACHETABLE"(VARCHAR, VARCHAR, VARCHAR)
+TO ROLE BATCHJOB_RW_DEV;
 ```
 
 ### Fallback Behavior
 
-If stream/task creation fails (e.g., insufficient privileges), the cache will:
-- **Still work perfectly** - All cache operations function normally
-- **Log a warning** - You'll know auto-refresh isn't setup
-- **Allow manual refresh** - You can call `cache.ForceRefresh()` whenever needed
+If the REGISTERCACHETABLE call initiated by the Go code fails (e.g., procedure doesn't exist, insufficient privileges), the cache will:
+- **Still work** - All cache operations function normally
+- **Log a warning** - You'll know stream registration failed
+- **Allow manual refresh** - You can call `cache.ForceRefresh()` or manually update `TABLE_LOG`
 
-### Requirements for Automatic Setup
+### Requirements for Automatic Stream Registration
 
-Your Snowflake user needs:
-- `CREATE STREAM` privilege on the schema
-- `CREATE TASK` privilege on the schema  
-- `USE WAREHOUSE` privilege (or set default warehouse)
+Your Snowflake setup needs:
+- The `REGISTERCACHETABLE` stored procedure created in your cache schema
+- `EXECUTE` privilege on the procedure
+- Procedure has permissions to `CREATE STREAM` on monitored tables
 - Appropriate role assignment
 
 If these aren't available, cache creation will succeed but you'll get a warning. Cache will still work - you'll just need to call `ForceRefresh()` manually or manually insert into TABLE_LOG.

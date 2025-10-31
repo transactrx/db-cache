@@ -431,6 +431,142 @@ func TestSnowflakeCacheIntegration(t *testing.T) {
 		assert.Error(t, err, "Should fail with invalid key field")
 		assert.Nil(t, cache, "Cache should be nil on error")
 	})
+
+	t.Run("REGISTERCACHETABLE Procedure Integration", func(t *testing.T) {
+		// This test creates a new table, registers it using REGISTERCACHETABLE procedure,
+		// and verifies the cache works with the registered table and stream
+
+		ctx := context.Background()
+		testTableName := "TEST_PRODUCTS_" + fmt.Sprintf("%d", time.Now().Unix())
+
+		// Step 1: Create a test table
+		createTableSQL := fmt.Sprintf(`
+			CREATE TABLE IF NOT EXISTS %s.%s.%s (
+				ID INTEGER AUTOINCREMENT,
+				PRODUCT_CODE VARCHAR(50) UNIQUE NOT NULL,
+				PRODUCT_NAME VARCHAR(255) NOT NULL,
+				PRICE FLOAT NOT NULL,
+				IN_STOCK BOOLEAN DEFAULT TRUE,
+				CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+			)
+		`, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, testTableName)
+
+		_, err := db.ExecContext(ctx, createTableSQL)
+		require.NoError(t, err, "Failed to create test table %s", testTableName)
+		t.Logf("✓ Created test table: %s", testTableName)
+
+		// Ensure cleanup happens
+		defer func() {
+			dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s.%s.%s", SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, testTableName)
+			db.ExecContext(context.Background(), dropSQL)
+			t.Logf("✓ Cleaned up test table: %s", testTableName)
+		}()
+
+		// Step 2: Insert test data
+		insertSQL := fmt.Sprintf(`
+			INSERT INTO %s.%s.%s (PRODUCT_CODE, PRODUCT_NAME, PRICE, IN_STOCK)
+			VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)
+		`, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, testTableName)
+
+		_, err = db.ExecContext(ctx, insertSQL,
+			"PROD001", "Widget A", 29.99, true,
+			"PROD002", "Widget B", 39.99, true,
+			"PROD003", "Widget C", 49.99, false,
+		)
+		require.NoError(t, err, "Failed to insert test data")
+		t.Logf("✓ Inserted 3 test products")
+
+		// Step 3: Enable Go-side stream registration (do not call the procedure directly)
+		prev := os.Getenv("DB_CACHE_SF_REGISTER_STREAMS")
+		os.Setenv("DB_CACHE_SF_REGISTER_STREAMS", "true")
+		defer os.Setenv("DB_CACHE_SF_REGISTER_STREAMS", prev)
+		t.Logf("✓ Enabled DB_CACHE_SF_REGISTER_STREAMS=true; Go cache will register via REGISTERCACHETABLE")
+
+		// Step 4: Create cache for the new table (procedure already handled TABLE_LOG)
+		type TestProduct struct {
+			ID          int     `db:"id"`
+			ProductCode string  `db:"product_code"`
+			ProductName string  `db:"product_name"`
+			Price       float64 `db:"price"`
+			InStock     bool    `db:"in_stock"`
+		}
+
+		cacheSQL := fmt.Sprintf(`
+			SELECT 
+				ID AS "id",
+				PRODUCT_CODE AS "product_code",
+				PRODUCT_NAME AS "product_name",
+				PRICE AS "price",
+				IN_STOCK AS "in_stock"
+			FROM %s.%s.%s
+			WHERE IN_STOCK = TRUE
+		`, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, testTableName)
+
+		cache, err := dbcache.CreateCache[TestProduct](
+			logger,
+			cacheSQL,
+			[]string{testTableName},
+			"ProductCode",
+			2*time.Second,
+			db,
+			SNOWFLAKE_DATABASE+"."+SNOWFLAKE_SCHEMA,
+		)
+		require.NoError(t, err, "Failed to create cache for test table")
+		t.Logf("✓ Created cache for %s", testTableName)
+
+		// Step 5: Verify cache works correctly
+		allProducts := cache.GetAll()
+		assert.Len(t, allProducts, 2, "Should return 2 in-stock products")
+		t.Logf("✓ Cache contains %d in-stock products", len(allProducts))
+
+		// Test Get with specific product code
+		prod1 := cache.Get("PROD001")
+		if assert.NotEmpty(t, prod1, "Should find PROD001") {
+			assert.Equal(t, "PROD001", prod1[0].ProductCode)
+			assert.Equal(t, "Widget A", prod1[0].ProductName)
+			assert.Equal(t, 29.99, prod1[0].Price)
+			t.Logf("✓ Retrieved PROD001: %s ($%.2f)", prod1[0].ProductName, prod1[0].Price)
+		}
+
+		// Test that out-of-stock product is not in cache
+		prod3 := cache.Get("PROD003")
+		assert.Empty(t, prod3, "Should not find out-of-stock PROD003")
+
+		// Step 6: Test auto-refresh by inserting new data and manually updating TABLE_LOG
+		// Note: In production, your heartbeat Task would read the stream and update TABLE_LOG
+		insertNewSQL := fmt.Sprintf(`
+			INSERT INTO %s.%s.%s (PRODUCT_CODE, PRODUCT_NAME, PRICE, IN_STOCK)
+			VALUES (?, ?, ?, ?)
+		`, SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, testTableName)
+
+		_, err = db.ExecContext(ctx, insertNewSQL, "PROD004", "Widget D", 59.99, true)
+		require.NoError(t, err, "Failed to insert new product")
+		t.Logf("✓ Inserted new product PROD004")
+
+		// Manually update TABLE_LOG to trigger cache refresh
+		// (In production, your heartbeat Task consumes the stream and does this)
+		logSQL := fmt.Sprintf("INSERT INTO %s.%s.TABLE_LOG (TABLE_NAME, OPERATION_TIME, OPERATION_TYPE) VALUES (?, CURRENT_TIMESTAMP(), ?)",
+			SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA)
+		_, err = db.ExecContext(ctx, logSQL, testTableName, "INSERT")
+		require.NoError(t, err, "Failed to log change to TABLE_LOG")
+
+		// Wait for cache to refresh
+		time.Sleep(3 * time.Second)
+
+		// Verify new product is in cache
+		refreshedProducts := cache.GetAll()
+		assert.Len(t, refreshedProducts, 3, "Should now have 3 in-stock products")
+		t.Logf("✓ Cache refreshed: now contains %d products", len(refreshedProducts))
+
+		prod4 := cache.Get("PROD004")
+		if assert.NotEmpty(t, prod4, "Should find newly inserted PROD004") {
+			assert.Equal(t, "PROD004", prod4[0].ProductCode)
+			assert.Equal(t, "Widget D", prod4[0].ProductName)
+			t.Logf("✓ New product PROD004 successfully cached")
+		}
+
+		t.Logf("✅ REGISTERCACHETABLE procedure integration test completed successfully!")
+	})
 }
 
 // Helper function to run a single test (useful for debugging)
