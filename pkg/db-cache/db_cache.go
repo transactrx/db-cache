@@ -2,6 +2,7 @@ package dbcache
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -12,11 +13,24 @@ import (
 
 	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5/pgxpool"
+	snowflakecache "github.com/transactrx/db-cache/pkg/snowflake-cache"
 )
 
-var initialized bool = false
+// DbCache is the public, minimal contract implemented by both the Postgres and
+// Snowflake cache implementations. Returning this from constructors allows
+// callers to use the same type regardless of backing database without needing
+// to import multiple packages or wrap types.
+type DbCache[T any] interface {
+	Get(string) []T
+	GetAll() []T
+	ForceRefresh() error
+}
 
-type DbCache[T any] struct {
+// pgCache is the concrete Postgres-backed implementation.
+// It is intentionally unexported to keep the public API focused on the
+// `DbCache[T]` interface above while avoiding breaking changes beyond
+// removing the pointer from historical usages.
+type pgCache[T any] struct {
 	mutex           sync.RWMutex
 	databasePool    *pgxpool.Pool
 	keyCache        map[string][]T
@@ -28,7 +42,7 @@ type DbCache[T any] struct {
 	logger          *log.Logger
 }
 
-func (c *DbCache[T]) Get(index string) []T {
+func (c *pgCache[T]) Get(index string) []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	if val, ok := c.keyCache[index]; ok {
@@ -37,7 +51,7 @@ func (c *DbCache[T]) Get(index string) []T {
 	return nil
 }
 
-func (c *DbCache[T]) GetAll() []T {
+func (c *pgCache[T]) GetAll() []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	var result []T
@@ -47,7 +61,7 @@ func (c *DbCache[T]) GetAll() []T {
 	return result
 }
 
-func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
+func (c *pgCache[T]) getDbStaleCheckValue() (*string, error) {
 
 	checkQuery := generateStaleCheckSQL(c.monitoredTables)
 
@@ -84,7 +98,7 @@ func generateStaleCheckSQL(monitoredTables []string) string {
 	return checkQuery
 }
 
-func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
+func (c *pgCache[T]) loadCache(staleCheckVal *string) error {
 
 	if c.staleCheckVal != nil && *c.staleCheckVal == *staleCheckVal {
 		c.logger.Printf("Cache is already up to date..")
@@ -127,7 +141,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
-func (cache *DbCache[T]) ForceRefresh() error {
+func (cache *pgCache[T]) ForceRefresh() error {
 	cache.staleCheckVal = nil
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
@@ -138,20 +152,46 @@ func (cache *DbCache[T]) ForceRefresh() error {
 	return nil
 }
 
-func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB *pgxpool.Pool, DB_RW *pgxpool.Pool, SQLParams ...interface{}) (*DbCache[T], error) {
+func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB any, DB_RW any, SQLParams ...interface{}) (DbCache[T], error) {
 
+	// If not a pgx pool, assume Snowflake (*sql.DB) and delegate immediately.
+	if _, ok := DB.(*pgxpool.Pool); !ok {
+		sfDB, ok := DB.(*sql.DB)
+		if !ok {
+			return nil, fmt.Errorf("unsupported DB type: expected *pgxpool.Pool or *sql.DB")
+		}
+		var database, defaultSchema string
+		if s, ok := DB_RW.(string); ok {
+			// Parse "DATABASE.SCHEMA" format or just "SCHEMA"
+			parts := strings.Split(s, ".")
+			if len(parts) == 2 {
+				database = parts[0]
+				defaultSchema = parts[1]
+			} else {
+				defaultSchema = s
+			}
+		}
+		return snowflakecache.CreateCacheWithDatabase[T](logger, SQL, monitoredTables, keyField, cacheCheckInterval, sfDB, database, defaultSchema, SQLParams...)
+	}
+
+	// Postgres path (unchanged)
+	db := DB.(*pgxpool.Pool)
+	var db_rw *pgxpool.Pool
+	if w, ok := DB_RW.(*pgxpool.Pool); ok {
+		db_rw = w
+	}
 	if logger == nil {
 		logger = log.New(os.Stdout, "db_cache ", log.Lshortfile|log.Ltime)
 	}
-	cache := &DbCache[T]{
-		databasePool:    DB,
+	cache := &pgCache[T]{
+		databasePool:    db,
 		monitoredTables: monitoredTables,
 		loadSQL:         SQL,
 		keyField:        keyField,
 		sqlParameters:   SQLParams,
 		logger:          logger,
 	}
-	createTableMonitoringTriggers(monitoredTables, DB_RW, logger)
+	createTableMonitoringTriggers(monitoredTables, db_rw, logger)
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
 		return nil, err

@@ -1,4 +1,5 @@
-
+private*
 .idea/vcs.xml
 .idea/modules.xml
 .idea/db-cache.iml
+.env
