@@ -16,9 +16,21 @@ import (
 	snowflakecache "github.com/transactrx/db-cache/pkg/snowflake-cache"
 )
 
-var initialized bool = false
+// DbCache is the public, minimal contract implemented by both the Postgres and
+// Snowflake cache implementations. Returning this from constructors allows
+// callers to use the same type regardless of backing database without needing
+// to import multiple packages or wrap types.
+type DbCache[T any] interface {
+	Get(string) []T
+	GetAll() []T
+	ForceRefresh() error
+}
 
-type DbCache[T any] struct {
+// pgCache is the concrete Postgres-backed implementation.
+// It is intentionally unexported to keep the public API focused on the
+// `DbCache[T]` interface above while avoiding breaking changes beyond
+// removing the pointer from historical usages.
+type pgCache[T any] struct {
 	mutex           sync.RWMutex
 	databasePool    *pgxpool.Pool
 	keyCache        map[string][]T
@@ -30,14 +42,7 @@ type DbCache[T any] struct {
 	logger          *log.Logger
 }
 
-// Cache is the minimal shared interface implemented by both Postgres and Snowflake caches.
-type Cache[T any] interface {
-	Get(string) []T
-	GetAll() []T
-	ForceRefresh() error
-}
-
-func (c *DbCache[T]) Get(index string) []T {
+func (c *pgCache[T]) Get(index string) []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	if val, ok := c.keyCache[index]; ok {
@@ -46,7 +51,7 @@ func (c *DbCache[T]) Get(index string) []T {
 	return nil
 }
 
-func (c *DbCache[T]) GetAll() []T {
+func (c *pgCache[T]) GetAll() []T {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	var result []T
@@ -56,7 +61,7 @@ func (c *DbCache[T]) GetAll() []T {
 	return result
 }
 
-func (c *DbCache[T]) getDbStaleCheckValue() (*string, error) {
+func (c *pgCache[T]) getDbStaleCheckValue() (*string, error) {
 
 	checkQuery := generateStaleCheckSQL(c.monitoredTables)
 
@@ -93,7 +98,7 @@ func generateStaleCheckSQL(monitoredTables []string) string {
 	return checkQuery
 }
 
-func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
+func (c *pgCache[T]) loadCache(staleCheckVal *string) error {
 
 	if c.staleCheckVal != nil && *c.staleCheckVal == *staleCheckVal {
 		c.logger.Printf("Cache is already up to date..")
@@ -136,7 +141,7 @@ func (c *DbCache[T]) loadCache(staleCheckVal *string) error {
 	return nil
 }
 
-func (cache *DbCache[T]) ForceRefresh() error {
+func (cache *pgCache[T]) ForceRefresh() error {
 	cache.staleCheckVal = nil
 	staleCheckVal, err := cache.getDbStaleCheckValue()
 	if err != nil {
@@ -147,7 +152,7 @@ func (cache *DbCache[T]) ForceRefresh() error {
 	return nil
 }
 
-func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB any, DB_RW any, SQLParams ...interface{}) (Cache[T], error) {
+func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string, keyField string, cacheCheckInterval time.Duration, DB any, DB_RW any, SQLParams ...interface{}) (DbCache[T], error) {
 
 	// If not a pgx pool, assume Snowflake (*sql.DB) and delegate immediately.
 	if _, ok := DB.(*pgxpool.Pool); !ok {
@@ -178,7 +183,7 @@ func CreateCache[T any](logger *log.Logger, SQL string, monitoredTables []string
 	if logger == nil {
 		logger = log.New(os.Stdout, "db_cache ", log.Lshortfile|log.Ltime)
 	}
-	cache := &DbCache[T]{
+	cache := &pgCache[T]{
 		databasePool:    db,
 		monitoredTables: monitoredTables,
 		loadSQL:         SQL,
